@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Pressable, Platform } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { Spacing, Fonts } from '../../../constants/theme';
-import { io } from 'socket.io-client';
 import Constants from 'expo-constants';
+import { useEffect, useRef, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { io } from 'socket.io-client';
+import { Fonts, Spacing } from '../../../constants/theme';
 
 // Resolve backend server URL dynamically
 const getSocketUrl = () => {
@@ -71,7 +71,7 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
       console.log('[ERadio] Socket connected');
       const pttCallsign = `WT-${(socket.id || 'stub').substring(0, 4).toUpperCase()}`;
       socket.emit('register', { callsign: pttCallsign });
-      
+
       const initialServerChan = mapTacToServerChan(selectedChannel);
       socket.emit('join_channel', initialServerChan);
     });
@@ -139,13 +139,13 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
 
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        
+
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
         reader.onloadend = () => {
           const base64Data = reader.result as string;
           const base64Audio = base64Data.split(',')[1];
-          
+
           if (socketRef.current && socketRef.current.connected) {
             console.log('[ERadio] Broadcasting voice transmission...');
             socketRef.current.emit('voice_transmit', { audio: base64Audio });
@@ -175,10 +175,10 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
     try {
       const audioUrl = `data:audio/webm;base64,${base64Audio}`;
       const audio = new Audio(audioUrl);
-      
+
       let interval: any;
       setSignalBars(5);
-      
+
       audio.onplay = () => {
         setIsTransmitting(false); // Put back to receiving mode if we were simulating PTT
         interval = setInterval(() => {
@@ -209,7 +209,7 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
     if (isTransmitting) {
       // Start actual audio recording on PTT press
       startRecording();
-      
+
       interval = setInterval(() => {
         setMicSignal(Math.floor(Math.random() * 60) + 40); // 40% - 100% fluctuation
         setSignalBars(5);
@@ -217,7 +217,7 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
     } else {
       // Stop actual recording on PTT release
       stopRecording();
-      
+
       setMicSignal(0);
       setSignalBars(4);
     }
@@ -242,13 +242,13 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
     const bars = [];
     for (let i = 1; i <= 5; i++) {
       bars.push(
-        <View 
-          key={i} 
+        <View
+          key={i}
           style={[
-            styles.signalBarDot, 
+            styles.signalBarDot,
             { backgroundColor: i <= signalBars ? '#4af626' : 'rgba(74, 246, 38, 0.15)' },
             { height: i * 3 + 2 }
-          ]} 
+          ]}
         />
       );
     }
@@ -260,15 +260,15 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
     const elementsCount = 8;
     const waveElements = [];
     const isActive = isTransmitting || micSignal > 0;
-    
+
     for (let i = 0; i < elementsCount; i++) {
       const factor = isActive ? Math.sin((i / (elementsCount - 1)) * Math.PI) : 0.1;
-      const computedHeight = isActive 
+      const computedHeight = isActive
         ? Math.max(3, Math.floor((micSignal / 100) * 16 * factor) + (Math.random() * 4))
         : 3;
-        
+
       waveElements.push(
-        <View 
+        <View
           key={i}
           style={[
             styles.waveBar,
@@ -283,10 +283,10 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
   return (
     <View style={styles.outerContainer}>
       <Text style={[styles.cardTitle, { color: theme.text }]}>SECURE VOICE TRANSCEIVER</Text>
-      
+
       {/* Walkie-Talkie Device Chassis View */}
       <View style={styles.walkieWrapper}>
-        
+
         {/* Hardware Antennas & Dials (Positioned absolutely relative to wrapper) */}
         <View style={styles.antennaBase}>
           <View style={styles.antennaPole} />
@@ -306,7 +306,7 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
 
         {/* Walkie-Talkie Physical Body */}
         <View style={[styles.walkieBody, { backgroundColor: isDark ? '#1e222b' : '#3c4043', borderColor: isDark ? '#11141a' : '#202124' }]}>
-          
+
           {/* Simulated Case Screws */}
           <View style={[styles.screw, styles.screwTL]} />
           <View style={[styles.screw, styles.screwTR]} />
@@ -317,11 +317,11 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
           <View style={styles.brandRow}>
             <Text style={styles.brandLabel}>POLICECOMS RF-88</Text>
             <View style={styles.ledIndicatorGroup}>
-              <View 
+              <View
                 style={[
-                  styles.statusLedDot, 
+                  styles.statusLedDot,
                   { backgroundColor: isTransmitting ? '#ff2a2a' : '#2ad573' }
-                ]} 
+                ]}
               />
               <Text style={styles.statusLedText}>{isTransmitting ? 'TX' : 'STBY'}</Text>
             </View>
@@ -330,7 +330,7 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
           {/* Retro Glowing LCD Screen bezel */}
           <View style={styles.lcdBezel}>
             <View style={styles.lcdScreen}>
-              
+
               {/* LCD Display Header Row */}
               <View style={styles.lcdHeader}>
                 <View style={styles.lcdHeaderLeft}>
@@ -363,7 +363,7 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
                 </Text>
                 {renderVoiceMeter()}
               </View>
-              
+
             </View>
           </View>
 
@@ -386,11 +386,11 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
                 <Feather name="chevron-left" size={16} color="#ffffff" />
                 <Text style={styles.arrowBtnLabel}>CH-</Text>
               </Pressable>
-              
+
               <View style={styles.channelBadgeCenter}>
                 <Text style={styles.channelBadgeText}>{selectedChannel}</Text>
               </View>
-              
+
               <Pressable style={styles.arrowButton} onPress={nextChannel}>
                 <Text style={styles.arrowBtnLabel}>CH+</Text>
                 <Feather name="chevron-right" size={16} color="#ffffff" />
@@ -456,7 +456,7 @@ const styles = StyleSheet.create({
     marginTop: 80, // Reservation for antenna height
     marginBottom: Spacing.two,
   },
-  
+
   // Hardware elements protruding from the top
   antennaBase: {
     width: 20,
