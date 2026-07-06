@@ -1,26 +1,33 @@
-/**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
- */
-
-import '@/global.css';
-
 import { Platform } from 'react-native';
 
 export const Colors = {
   light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
-    textSecondary: '#60646C',
+    text: '#0f172a',
+    background: '#f8fafc',
+    backgroundElement: '#f1f5f9',
+    backgroundSelected: '#e2e8f0',
+    textSecondary: '#64748b',
+    primary: '#0284c7',
+    primaryGlow: 'rgba(2, 132, 199, 0.1)',
+    warning: '#ea580c',
+    danger: '#dc2626',
+    success: '#16a34a',
+    border: '#cbd5e1',
+    accent: '#0369a1',
   },
   dark: {
-    text: '#ffffff',
-    background: '#000000',
-    backgroundElement: '#212225',
-    backgroundSelected: '#2E3135',
-    textSecondary: '#B0B4BA',
+    text: '#f8fafc',
+    background: '#090a0f',
+    backgroundElement: '#12141c',
+    backgroundSelected: '#1c1f2e',
+    textSecondary: '#94a3b8',
+    primary: '#00e5ff',
+    primaryGlow: 'rgba(0, 229, 255, 0.15)',
+    warning: '#ff9f43',
+    danger: '#ff4d4d',
+    success: '#2ed573',
+    border: '#1f2430',
+    accent: '#0097a7',
   },
 } as const;
 
@@ -28,14 +35,10 @@ export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
 export const Fonts = Platform.select({
   ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
-    sans: 'system-ui',
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
-    serif: 'ui-serif',
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
-    rounded: 'ui-rounded',
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
-    mono: 'ui-monospace',
+    sans: 'System',
+    serif: 'Georgia',
+    rounded: 'System',
+    mono: 'Courier New',
   },
   default: {
     sans: 'normal',
@@ -44,10 +47,10 @@ export const Fonts = Platform.select({
     mono: 'monospace',
   },
   web: {
-    sans: 'var(--font-display)',
-    serif: 'var(--font-serif)',
-    rounded: 'var(--font-rounded)',
-    mono: 'var(--font-mono)',
+    sans: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    serif: 'Georgia, serif',
+    rounded: 'system-ui, sans-serif',
+    mono: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
   },
 });
 
