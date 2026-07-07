@@ -1,17 +1,17 @@
+import { Feather } from '@expo/vector-icons';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
   Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
   useColorScheme,
+  View,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Feather } from '@expo/vector-icons';
+import { ModuleRegistry } from '../../components/modules';
 import { MODULE_CATEGORIES } from '../../constants/modules';
 import { Colors, Spacing } from '../../constants/theme';
-import { ModuleRegistry } from '../../components/modules';
 
 export default function ModuleScreen() {
   const { id } = useLocalSearchParams();
@@ -47,7 +47,7 @@ export default function ModuleScreen() {
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       {/* Module Title Header Panel */}
-      <View style={[styles.moduleHeaderPanel, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
+      {/* <View style={[styles.moduleHeaderPanel, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
         <View style={styles.headerTitleRow}>
           <View style={[styles.categoryIconCircle, { backgroundColor: theme.primaryGlow }]}>
             <Feather name={moduleItem.icon as any} size={20} color={theme.primary} />
@@ -62,7 +62,7 @@ export default function ModuleScreen() {
         <Text style={[styles.moduleDescription, { color: theme.textSecondary }]}>
           {moduleItem.description}
         </Text>
-      </View>
+      </View> */}
 
       {/* Render Specific Interactive Content */}
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>

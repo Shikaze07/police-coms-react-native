@@ -9,6 +9,8 @@ import {
   ActivityIndicator,
   Platform,
   useWindowDimensions,
+  Image,
+  Alert,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Spacing, Fonts } from '../../../constants/theme';
@@ -17,7 +19,24 @@ import Constants from 'expo-constants';
 import { db } from '../../lib/firebase';
 import { collection, addDoc, query, orderBy, limit, getDocs } from 'firebase/firestore';
 
-// Resolve backend server URL dynamically
+// --- Constants ---
+const C = {
+  bg950: '#020617',
+  bg900: '#0f172a',
+  bg800: '#1e293b',
+  bg700: '#334155',
+  slate500: '#64748b',
+  slate400: '#94a3b8',
+  slate200: '#e2e8f0',
+  emerald600: '#059669',
+  emerald500: '#10b981',
+  emerald400: '#34d399',
+  emerald200: '#a7f3d0',
+  white: '#ffffff',
+  border: '#1e293b',
+};
+
+// --- URL Helper ---
 const getSocketUrl = () => {
   if (Platform.OS === 'web') {
     if (typeof window !== 'undefined' && window.location) {
@@ -25,7 +44,6 @@ const getSocketUrl = () => {
       return `http://${hostname}:3000`;
     }
   }
-  // Native devices / simulators need mapping to Metro server host IP
   const debuggerHost = Constants.expoConfig?.hostUri;
   if (debuggerHost) {
     const ip = debuggerHost.split(':')[0];
@@ -34,6 +52,7 @@ const getSocketUrl = () => {
   return 'http://localhost:3000';
 };
 
+// --- Types ---
 interface Message {
   id: string;
   sender: string;
@@ -51,39 +70,82 @@ interface User {
   status: string;
 }
 
+interface ChatContact {
+  id: string;
+  name: string;
+  initials: string;
+  lastMessage: string;
+  time: string;
+  unread: number;
+  status: 'ONLINE' | 'OFFLINE' | 'BUSY';
+}
+
+// --- Mock Contacts ---
+const MOCK_CONTACTS: ChatContact[] = [
+  { id: '#dispatch',     name: '#DISPATCH',    initials: 'DS', lastMessage: 'No broadcasts yet', time: '', unread: 0, status: 'ONLINE' },
+  { id: '#tactical-1',  name: '#TACTICAL-1',  initials: 'T1', lastMessage: 'No broadcasts yet', time: '', unread: 0, status: 'ONLINE' },
+  { id: '#intel-ops',   name: '#INTEL-OPS',   initials: 'IO', lastMessage: 'No broadcasts yet', time: '', unread: 0, status: 'ONLINE' },
+];
+
+const QUICK_CODES = [
+  { label: '10-4 (ACK)',       val: '10-4 Acknowledged.' },
+  { label: '10-20 (LOC)',      val: 'Requesting 10-20 (Location check).' },
+  { label: '10-78 (ASSIST)',   val: '10-78 - Officer requests assistance immediately.' },
+  { label: 'SECURE',           val: 'Area secured. No active threats.' },
+  { label: 'EN ROUTE',         val: 'En route to location.' },
+];
+
 export default function EMessenger({ theme, isDark }: { theme: any; isDark: boolean }) {
-  const socketRef = useRef<any>(null);
-  const scrollViewRef = useRef<ScrollView>(null);
+  const socketRef      = useRef<any>(null);
+  const scrollViewRef  = useRef<ScrollView>(null);
 
-  const [connected, setConnected] = useState(false);
-  const [connecting, setConnecting] = useState(true);
-  const [latency, setLatency] = useState(0);
-  const [callsign, setCallsign] = useState('');
-  const [tempCallsign, setTempCallsign] = useState('');
-  const [isEditingCallsign, setIsEditingCallsign] = useState(false);
-  const [activeChannel, setActiveChannel] = useState('#dispatch');
-  const [channels, setChannels] = useState<string[]>(['#dispatch', '#tactical-1', '#intel-ops']);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputText, setInputText] = useState('');
-  const [users, setUsers] = useState<User[]>([]);
+  const [connected,          setConnected]          = useState(false);
+  const [connecting,         setConnecting]         = useState(true);
+  const [latency,            setLatency]            = useState(0);
+  const [callsign,           setCallsign]           = useState('');
+  const [tempCallsign,       setTempCallsign]       = useState('');
+  const [isEditingCallsign,  setIsEditingCallsign]  = useState(false);
+  const [activeChannel,      setActiveChannel]      = useState('#dispatch');
+  const [channels,           setChannels]           = useState<string[]>(['#dispatch', '#tactical-1', '#intel-ops']);
+  const [messages,           setMessages]           = useState<Message[]>([]);
+  const [inputText,          setInputText]          = useState('');
+  const [users,              setUsers]              = useState<User[]>([]);
+  const [searchQuery,        setSearchQuery]        = useState('');
 
-  // Split view states
   const { width: windowWidth } = useWindowDimensions();
   const isLargeScreen = windowWidth >= 768;
   const [mobileView, setMobileView] = useState<'sidebar' | 'chat'>('chat');
-  const [showInfoSidebar, setShowInfoSidebar] = useState(true);
 
-  // Sync mobile view on screen resizing
+  // Build contact list from channels state
+  const contacts: ChatContact[] = channels.map((ch) => {
+    const base = MOCK_CONTACTS.find((c) => c.id === ch);
+    const chanMsgs = messages.filter((m) => m.channel === ch);
+    const last = chanMsgs.length > 0 ? chanMsgs[chanMsgs.length - 1] : null;
+    const lastMsg = last ? (last.isSystem ? last.text : `${last.sender}: ${last.text}`) : 'No broadcasts yet';
+    const lastTime = last?.timestamp ? last.timestamp.split(':').slice(0, 2).join(':') : '';
+    return {
+      id: ch,
+      name: ch.toUpperCase(),
+      initials: base?.initials || ch.substring(1, 3).toUpperCase(),
+      lastMessage: lastMsg,
+      time: lastTime,
+      unread: 0,
+      status: 'ONLINE',
+    };
+  });
+
+  const filteredContacts = contacts.filter((c) =>
+    c.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  // Sync mobile view on resize
   useEffect(() => {
-    if (isLargeScreen) {
-      setMobileView('chat');
-    }
+    if (isLargeScreen) setMobileView('chat');
   }, [isLargeScreen]);
 
-  // Connect to socket.io server
+  // Socket.io connection
   useEffect(() => {
     const serverUrl = getSocketUrl();
-    console.log('[EMessenger] Connecting to:', serverUrl);
     setConnecting(true);
 
     const socket = io(serverUrl, {
@@ -97,58 +159,31 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
     socket.on('connect', () => {
       setConnected(true);
       setConnecting(false);
-      console.log('[EMessenger] Connected successfully');
-      
-      // Measure connection latency
       const start = Date.now();
       socket.emit('ping');
-      socket.once('pong', () => {
-        setLatency(Date.now() - start);
-      });
+      socket.once('pong', () => setLatency(Date.now() - start));
     });
 
-    // Periodically update latency (ping/pong check)
     const latencyInterval = setInterval(() => {
       if (socket.connected) {
         const start = Date.now();
         socket.emit('ping');
-        socket.once('pong', () => {
-          setLatency(Date.now() - start);
-        });
+        socket.once('pong', () => setLatency(Date.now() - start));
       }
     }, 10000);
 
     socket.on('init', (data: { defaultCallsign: string; channels: string[]; activeChannel: string }) => {
       setChannels(data.channels);
       setActiveChannel(data.activeChannel);
-      // Random callsign received from server
-      const defaultCall = data.defaultCallsign;
-      setCallsign(defaultCall);
-      setTempCallsign(defaultCall);
-      
-      // Register our connection with this callsign
-      socket.emit('register', { callsign: defaultCall });
+      setCallsign(data.defaultCallsign);
+      setTempCallsign(data.defaultCallsign);
+      socket.emit('register', { callsign: data.defaultCallsign });
     });
 
-    socket.on('message', (msg: Message) => {
-      setMessages((prev) => [...prev, msg]);
-    });
-
-    socket.on('user_list', (userList: User[]) => {
-      setUsers(userList);
-    });
-
-    socket.on('disconnect', () => {
-      setConnected(false);
-      setConnecting(false);
-      console.log('[EMessenger] Disconnected');
-    });
-
-    socket.on('connect_error', (err) => {
-      setConnected(false);
-      setConnecting(false);
-      console.log('[EMessenger] Connection error:', err.message);
-    });
+    socket.on('message', (msg: Message) => setMessages((prev) => [...prev, msg]));
+    socket.on('user_list', (userList: User[]) => setUsers(userList));
+    socket.on('disconnect', () => { setConnected(false); setConnecting(false); });
+    socket.on('connect_error', () => { setConnected(false); setConnecting(false); });
 
     return () => {
       clearInterval(latencyInterval);
@@ -156,78 +191,56 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
     };
   }, []);
 
-  // Load history from Firebase Firestore
+  // Load Firestore history
   useEffect(() => {
+    if (!connected) return;
     const loadHistory = async () => {
       try {
-        console.log('[EMessenger] Fetching history from Firestore...');
-        // Query last 100 messages overall to bypass index requirement
-        const q = query(
-          collection(db, 'messages'),
-          orderBy('createdAt', 'asc'),
-          limit(100)
-        );
-        const querySnapshot = await getDocs(q);
-        const hist = querySnapshot.docs
+        const q = query(collection(db, 'messages'), orderBy('createdAt', 'asc'), limit(100));
+        const snap = await getDocs(q);
+        const hist = snap.docs
           .map((doc) => {
-            const data = doc.data();
+            const d = doc.data();
             return {
               id: doc.id,
-              sender: data.sender || '',
-              text: data.text || '',
-              channel: data.channel || '',
-              timestamp: data.timestamp || '',
-              isSystem: data.isSystem || false,
-              isSimulated: data.isSimulated || false,
+              sender: d.sender || '',
+              text: d.text || '',
+              channel: d.channel || '',
+              timestamp: d.timestamp || '',
+              isSystem: d.isSystem || false,
+              isSimulated: d.isSimulated || false,
             };
           })
           .filter((m) => m.channel === activeChannel && !m.isSimulated);
-
         setMessages(hist);
       } catch (e) {
-        console.warn('[EMessenger] Firestore history load error:', e);
+        console.warn('[EMessenger] Firestore load error:', e);
       }
     };
-
-    if (connected) {
-      loadHistory();
-    }
+    loadHistory();
   }, [activeChannel, connected]);
 
-  // Scroll to bottom when messages list updates
+  // Scroll to bottom
   useEffect(() => {
-    if (scrollViewRef.current) {
-      setTimeout(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-    }
+    setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
   }, [messages]);
 
-  // Handle setting/changing callsign
   const handleUpdateCallsign = () => {
     if (!tempCallsign.trim()) return;
     const formatted = tempCallsign.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
     setCallsign(formatted);
     setIsEditingCallsign(false);
-    if (socketRef.current) {
-      socketRef.current.emit('register', { callsign: formatted });
-    }
+    socketRef.current?.emit('register', { callsign: formatted });
   };
 
-  // Switch chat channels
   const handleSelectChannel = (channel: string) => {
     if (channel === activeChannel) return;
     setActiveChannel(channel);
-    setMessages([]); // Clear chat feed for the new channel
-    if (socketRef.current) {
-      socketRef.current.emit('join_channel', channel);
-    }
-    if (!isLargeScreen) {
-      setMobileView('chat');
-    }
+    setMessages([]);
+    socketRef.current?.emit('join_channel', channel);
+    if (!isLargeScreen) setMobileView('chat');
   };
 
-  // Send message
   const handleSendMessage = async (textToSend?: string) => {
     const finalTxt = textToSend || inputText;
     if (!finalTxt.trim() || !connected) return;
@@ -243,403 +256,395 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
     };
 
     try {
-      // 1. Save to Firebase Firestore
       const docRef = await addDoc(collection(db, 'messages'), msgData);
-      
-      // 2. Broadcast via Socket.io
-      if (socketRef.current) {
-        socketRef.current.emit('send_message', {
-          id: docRef.id,
-          ...msgData
-        });
-      }
-
-      if (!textToSend) {
-        setInputText('');
-      }
-    } catch (e) {
-      console.error('[EMessenger] Save to Firestore failed:', e);
-      // Fallback: send via socket
-      if (socketRef.current) {
-        socketRef.current.emit('send_message', { text: finalTxt.trim() });
-      }
-      if (!textToSend) {
-        setInputText('');
-      }
+      socketRef.current?.emit('send_message', { id: docRef.id, ...msgData });
+    } catch {
+      socketRef.current?.emit('send_message', { text: finalTxt.trim() });
+    } finally {
+      if (!textToSend) setInputText('');
     }
   };
 
-  // Quick tactical codes to send instantly
-  const QUICK_CODES = [
-    { label: '10-4 (ACK)', val: '10-4 Acknowledged.' },
-    { label: '10-20 (LOC)', val: 'Requesting 10-20 (Location check).' },
-    { label: '10-78 (NEED ASSIST)', val: '10-78 - Officer requests assistance immediately.' },
-    { label: 'SECURE', val: 'Area secured. No active threats.' },
-    { label: 'EN ROUTE', val: 'En route to location.' },
-  ];
-
-  // Helper: Retrieve last message info for sidebar channel view
-  const getLastMessage = (channelName: string) => {
-    const chanMsgs = messages.filter(m => m.channel === channelName);
-    if (chanMsgs.length === 0) return 'No broadcasts yet';
-    const last = chanMsgs[chanMsgs.length - 1];
-    if (last.isSystem) return last.text;
-    return `${last.sender}: ${last.text}`;
-  };
-
-  const getLastMessageTime = (channelName: string) => {
-    const chanMsgs = messages.filter(m => m.channel === channelName);
-    if (chanMsgs.length === 0) return '';
-    const last = chanMsgs[chanMsgs.length - 1];
-    if (last.timestamp) {
-      const parts = last.timestamp.split(':');
-      if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
-      return last.timestamp;
-    }
-    return '';
-  };
-
-  // Filter messages for current channel
   const filteredMessages = messages.filter((m) => m.channel === activeChannel);
 
-  // Group consecutive messages by sender and render them
-  const renderMessageList = () => {
-    return filteredMessages.map((msg, index) => {
-      if (msg.isSystem) {
-        return (
-          <View key={msg.id} style={styles.systemMsgContainer}>
-            <Text style={[styles.systemLogText, { color: theme.textSecondary }]}>
-              {`[${msg.timestamp}] *** ${msg.text}`}
-            </Text>
-          </View>
-        );
-      }
-
-      const isSelf = msg.sender === callsign;
-      
-      const prevMsg = index > 0 ? filteredMessages[index - 1] : null;
-      const nextMsg = index < filteredMessages.length - 1 ? filteredMessages[index + 1] : null;
-      
-      const isConsecutivePrev = prevMsg && !prevMsg.isSystem && prevMsg.sender === msg.sender;
-      const isConsecutiveNext = nextMsg && !nextMsg.isSystem && nextMsg.sender === msg.sender;
-
-      return (
-        <View
-          key={msg.id}
-          style={[
-            styles.messageBubbleWrapper,
-            isSelf ? styles.msgRight : styles.msgLeft,
-            isConsecutivePrev && { marginTop: 2 }
-          ]}
+  // ─────────────────────────────────────────
+  //  RENDER: LEFT SIDEBAR (Contacts/Channels)
+  // ─────────────────────────────────────────
+  const renderSidebar = () => (
+    <View style={styles.sidebar}>
+      {/* Header: profile + callsign */}
+      <View style={styles.sidebarProfile}>
+        <View style={styles.profileAvatar}>
+          <Text style={styles.profileAvatarText}>{callsign ? callsign.charAt(0) : '?'}</Text>
+        </View>
+        <View>
+          <Text style={styles.profileName}>{callsign || 'OFFICER'}</Text>
+          <Text style={styles.profileRole}>FIELD OFFICER</Text>
+        </View>
+        <Pressable
+          onPress={() => setIsEditingCallsign(!isEditingCallsign)}
+          style={styles.editCallsignBtn}
         >
-          {!isConsecutivePrev && (
-            <View style={styles.msgHeader}>
-              <Text style={[
-                styles.msgSender, 
-                { color: isSelf ? theme.primary : (msg.isSimulated ? theme.warning : theme.accent) }
-              ]}>
-                {msg.sender}
-              </Text>
-              <Text style={[styles.msgTime, { color: theme.textSecondary }]}>
-                {msg.timestamp}
-              </Text>
-            </View>
-          )}
+          <Feather name="edit-2" size={12} color={C.emerald400} />
+        </Pressable>
+      </View>
 
-          <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 8 }}>
-            {!isSelf && (
-              <View style={[styles.avatarCircle, { backgroundColor: msg.isSimulated ? theme.warningGlow : theme.accentGlow }]}>
-                {!isConsecutiveNext ? (
-                  <Text style={[styles.avatarText, { color: msg.isSimulated ? theme.warning : theme.accent }]}>
-                    {msg.sender.substring(0, 2)}
-                  </Text>
-                ) : (
-                  <View style={{ width: 24 }} />
-                )}
-              </View>
-            )}
-
-            <View style={[
-              styles.messageBubble,
-              { backgroundColor: theme.backgroundElement, borderColor: theme.border },
-              isSelf && { 
-                borderColor: theme.primary, 
-                backgroundColor: theme.primary,
-              },
-              isSelf && styles.bubbleSelf,
-              !isSelf && styles.bubbleOther,
-              isSelf && isConsecutivePrev && { borderTopRightRadius: 4 },
-              isSelf && isConsecutiveNext && { borderBottomRightRadius: 4 },
-              !isSelf && isConsecutivePrev && { borderTopLeftRadius: 4 },
-              !isSelf && isConsecutiveNext && { borderBottomLeftRadius: 4 },
-              msg.isSimulated && { borderColor: theme.warning + '50' }
-            ]}>
-              <Text style={[
-                styles.messageText, 
-                { color: theme.text },
-                isSelf && { color: '#ffffff' }
-              ]}>
-                {msg.text}
-              </Text>
-            </View>
+      {/* Callsign Editor */}
+      {isEditingCallsign && (
+        <View style={styles.callsignEditor}>
+          <TextInput
+            style={styles.callsignInput}
+            value={tempCallsign}
+            onChangeText={setTempCallsign}
+            placeholder="CALLSIGN (e.g. K9-1)"
+            placeholderTextColor={C.slate500}
+            autoCapitalize="characters"
+            maxLength={12}
+          />
+          <View style={styles.callsignBtns}>
+            <Pressable style={styles.callsignSave} onPress={handleUpdateCallsign}>
+              <Text style={styles.callsignSaveText}>SAVE</Text>
+            </Pressable>
+            <Pressable style={styles.callsignCancel} onPress={() => setIsEditingCallsign(false)}>
+              <Text style={styles.callsignCancelText}>CANCEL</Text>
+            </Pressable>
           </View>
         </View>
-      );
-    });
-  };
+      )}
 
-  // Left Sidebar: Channels & Roster List
-  const renderSidebar = () => {
-    return (
-      <View style={[styles.sidebarContainer, { backgroundColor: isDark ? '#0d1117' : '#f5f6f8', borderColor: theme.border }]}>
-        <View style={styles.sidebarHeader}>
-          <Text style={[styles.sidebarTitle, { color: theme.text }]}>Tactical Comms</Text>
-          <Pressable 
-            style={[styles.callsignBadge, { backgroundColor: theme.primaryGlow, borderColor: theme.primary }]}
-            onPress={() => setIsEditingCallsign(!isEditingCallsign)}
-          >
-            <Feather name="edit-2" size={10} color={theme.primary} />
-            <Text style={[styles.callsignBadgeText, { color: theme.primary }]}> {callsign}</Text>
-          </Pressable>
+      {/* Search */}
+      <View style={styles.searchRow}>
+        <View style={styles.searchWrapper}>
+          <Feather name="search" size={14} color={C.slate500} style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search contacts..."
+            placeholderTextColor={C.slate500}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
         </View>
+      </View>
 
-        {isEditingCallsign && (
-          <View style={[styles.callsignEditorDropdown, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
-            <TextInput
-              style={[styles.callsignInput, { color: theme.text, borderColor: theme.border, backgroundColor: isDark ? '#0d1117' : '#ffffff' }]}
-              value={tempCallsign}
-              onChangeText={setTempCallsign}
-              placeholder="CALLSIGN (e.g. K9-1)"
-              placeholderTextColor={theme.textSecondary}
-              autoCapitalize="characters"
-              maxLength={12}
-            />
-            <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
-              <Pressable style={[styles.inlineSaveBtn, { backgroundColor: theme.primary }]} onPress={handleUpdateCallsign}>
-                <Text style={styles.inlineBtnText}>SAVE</Text>
-              </Pressable>
-              <Pressable style={[styles.inlineCancelBtn, { borderColor: theme.border }]} onPress={() => setIsEditingCallsign(false)}>
-                <Text style={[styles.inlineCancelBtnText, { color: theme.textSecondary }]}>CANCEL</Text>
-              </Pressable>
-            </View>
-          </View>
-        )}
-
-        <View style={styles.activeUsersSection}>
-          <Text style={[styles.sectionSubtitle, { color: theme.textSecondary }]}>ONLINE UNITS ({users.length})</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activeUsersRow}>
+      {/* Online Units */}
+      {users.length > 0 && (
+        <View style={styles.onlineSection}>
+          <Text style={styles.sectionLabel}>ONLINE UNITS ({users.length})</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.onlineRow}>
             {users.map((u, i) => (
-              <View key={`${u.callsign}-${i}`} style={styles.activeUserBubble}>
-                <View style={[styles.avatarCircleLarge, { backgroundColor: u.isSimulated ? theme.warningGlow : theme.successGlow }]}>
-                  <Text style={[styles.avatarCircleTextLarge, { color: u.isSimulated ? theme.warning : theme.success }]}>
-                    {u.callsign.substring(0, 2)}
-                  </Text>
-                  <View style={[styles.statusDotActive, { backgroundColor: u.isSimulated ? theme.textSecondary : theme.success }]} />
+              <View key={`${u.callsign}-${i}`} style={styles.onlineBubble}>
+                <View style={styles.onlineAvatar}>
+                  <Text style={styles.onlineAvatarText}>{u.callsign.substring(0, 2)}</Text>
+                  <View style={[styles.onlineDot, { backgroundColor: u.isSimulated ? C.slate500 : C.emerald500 }]} />
                 </View>
-                <Text numberOfLines={1} style={[styles.activeUserCallsign, { color: theme.text }]}>{u.callsign}</Text>
+                <Text numberOfLines={1} style={styles.onlineCallsign}>{u.callsign}</Text>
               </View>
             ))}
           </ScrollView>
         </View>
+      )}
 
-        <Text style={[styles.sectionSubtitle, { color: theme.textSecondary, paddingLeft: 16, marginBottom: 4 }]}>CHANNELS</Text>
-        <ScrollView style={styles.sidebarList}>
-          {channels.map((chan) => {
-            const isActive = activeChannel === chan;
-            const lastMsg = getLastMessage(chan);
-            const lastMsgTime = getLastMessageTime(chan);
-            
-            return (
-              <Pressable
-                key={chan}
-                style={[
-                  styles.channelItem,
-                  isActive && { backgroundColor: isDark ? '#1f242c' : '#e4e6eb' }
-                ]}
-                onPress={() => handleSelectChannel(chan)}
-              >
-                <View style={[styles.channelIconContainer, { backgroundColor: isActive ? theme.primary : (isDark ? '#21262d' : '#e4e6eb') }]}>
-                  <Feather name={chan === '#dispatch' ? 'shield' : chan === '#tactical-1' ? 'crosshair' : 'activity'} size={14} color={isActive ? '#ffffff' : theme.text} />
-                </View>
-                <View style={styles.channelInfo}>
-                  <View style={styles.channelInfoTop}>
-                    <Text numberOfLines={1} style={[styles.channelNameText, { color: theme.text }, isActive && { fontWeight: 'bold' }]}>
-                      {chan.toUpperCase()}
-                    </Text>
-                    <Text style={[styles.channelTimeText, { color: theme.textSecondary }]}>{lastMsgTime}</Text>
-                  </View>
-                  <Text numberOfLines={1} style={[styles.channelLastMsgText, { color: theme.textSecondary }, isActive && { color: theme.text }]}>
-                    {lastMsg}
+      {/* Contact List */}
+      <ScrollView style={styles.contactList}>
+        {filteredContacts.map((contact) => {
+          const isActive = contact.id === activeChannel;
+          return (
+            <Pressable
+              key={contact.id}
+              onPress={() => handleSelectChannel(contact.id)}
+              style={[styles.contactItem, isActive && styles.contactItemActive]}
+            >
+              <View style={styles.contactAvatarWrapper}>
+                <View style={[styles.contactAvatar, isActive && styles.contactAvatarActive]}>
+                  <Text style={[styles.contactAvatarText, isActive && styles.contactAvatarTextActive]}>
+                    {contact.initials}
                   </Text>
                 </View>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-      </View>
-    );
-  };
-
-  // Main Chat Pane: Log, Input & Action triggers
-  const renderChatArea = () => {
-    return (
-      <View style={styles.chatAreaContainer}>
-        <View style={[styles.chatHeader, { backgroundColor: isDark ? '#0d1117' : '#ffffff', borderColor: theme.border }]}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            {!isLargeScreen && (
-              <Pressable onPress={() => setMobileView('sidebar')} style={styles.backButton}>
-                <Feather name="chevron-left" size={24} color={theme.primary} />
-              </Pressable>
-            )}
-            <View style={[styles.headerAvatar, { backgroundColor: theme.primaryGlow }]}>
-              <Feather name={activeChannel === '#dispatch' ? 'shield' : activeChannel === '#tactical-1' ? 'crosshair' : 'activity'} size={16} color={theme.primary} />
-            </View>
-            <View>
-              <Text style={[styles.headerChannelName, { color: theme.text }]}>{activeChannel.toUpperCase()}</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                <View style={[styles.indicatorDot, { backgroundColor: connected ? theme.success : theme.danger, width: 6, height: 6, borderRadius: 3 }]} />
-                <Text style={[styles.headerStatusText, { color: theme.textSecondary }]}>
-                  {connected ? 'SECURE COM LINK' : 'LINK OFFLINE'}
-                </Text>
+                <View style={[
+                  styles.contactStatusDot,
+                  { backgroundColor: contact.status === 'ONLINE' ? C.emerald500 : C.slate500 }
+                ]} />
               </View>
-            </View>
-          </View>
-
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
-            <Pressable style={styles.headerIconBtn}>
-              <Feather name="phone" size={18} color={theme.primary} />
+              <View style={styles.contactInfo}>
+                <View style={styles.contactInfoTop}>
+                  <Text
+                    numberOfLines={1}
+                    style={[styles.contactName, isActive && styles.contactNameActive]}
+                  >
+                    {contact.name}
+                  </Text>
+                  {contact.time ? (
+                    <Text style={styles.contactTime}>{contact.time}</Text>
+                  ) : null}
+                </View>
+                <Text numberOfLines={1} style={styles.contactLastMsg}>{contact.lastMessage}</Text>
+              </View>
+              {contact.unread > 0 && (
+                <View style={styles.unreadBadge}>
+                  <Text style={styles.unreadText}>{contact.unread}</Text>
+                </View>
+              )}
             </Pressable>
-            <Pressable style={styles.headerIconBtn}>
-              <Feather name="video" size={18} color={theme.primary} />
-            </Pressable>
-            {isLargeScreen && (
-              <Pressable onPress={() => setShowInfoSidebar(!showInfoSidebar)} style={styles.headerIconBtn}>
-                <Feather name="info" size={18} color={showInfoSidebar ? theme.primary : theme.textSecondary} />
-              </Pressable>
-            )}
-          </View>
-        </View>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
 
-        <View style={[styles.chatFeedContainer, { backgroundColor: isDark ? '#08090d' : '#f5f6f8' }]}>
-          {connecting && messages.length === 0 ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="small" color={theme.primary} />
-              <Text style={[styles.systemLogText, { color: theme.textSecondary, marginTop: Spacing.two }]}>
-                INITIALIZING SECURE COM CHANNELS...
+  // ─────────────────────────────────────────
+  //  RENDER: MAIN CHAT AREA
+  // ─────────────────────────────────────────
+  const renderChatArea = () => (
+    <View style={styles.chatArea}>
+      {/* Chat Header */}
+      <View style={styles.chatHeader}>
+        <View style={styles.chatHeaderLeft}>
+          {!isLargeScreen && (
+            <Pressable onPress={() => setMobileView('sidebar')} style={styles.backBtn}>
+              <Feather name="chevron-left" size={22} color={C.emerald400} />
+            </Pressable>
+          )}
+          <View style={styles.chatHeaderAvatar}>
+            <Text style={styles.chatHeaderAvatarText}>
+              {activeChannel.substring(1, 3).toUpperCase()}
+            </Text>
+            <View style={[styles.chatHeaderDot, { backgroundColor: connected ? C.emerald500 : '#ef4444' }]} />
+          </View>
+          <View>
+            <Text style={styles.chatHeaderName}>{activeChannel.toUpperCase()}</Text>
+            <View style={styles.chatHeaderStatusRow}>
+              <View style={[styles.chatStatusDot, { backgroundColor: connected ? C.emerald500 : '#ef4444' }]} />
+              <Text style={styles.chatHeaderStatus}>
+                {connected ? 'SECURE COM LINK' : connecting ? 'CONNECTING...' : 'LINK OFFLINE'}
               </Text>
             </View>
-          ) : (
-            <ScrollView
-              ref={scrollViewRef}
-              style={styles.messageScroll}
-              contentContainerStyle={styles.messageContent}
-              nestedScrollEnabled={true}
-            >
-              {filteredMessages.length === 0 ? (
-                <View style={styles.emptyContainer}>
-                  <Feather name="message-square" size={32} color={theme.textSecondary} style={{ opacity: 0.3, marginBottom: 12 }} />
-                  <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
-                    COM CHANNEL SECURED // NO BROADCASTS YET
-                  </Text>
-                </View>
-              ) : (
-                renderMessageList()
-              )}
-            </ScrollView>
-          )}
+          </View>
         </View>
-
-        <View style={[styles.bottomControlsContainer, { backgroundColor: isDark ? '#0d1117' : '#ffffff', borderColor: theme.border }]}>
-          <View style={styles.quickKeysWrapper}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickKeysScroll}>
-              {QUICK_CODES.map((code, idx) => (
-                <Pressable
-                  key={idx}
-                  style={[styles.quickKeyBadge, { backgroundColor: isDark ? '#21262d' : '#e4e6eb' }]}
-                  onPress={() => handleSendMessage(code.val)}
-                  disabled={!connected}
-                >
-                  <Text style={[styles.quickKeyBadgeText, { color: theme.text }]}>{code.label}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-          </View>
-
-          <View style={styles.inputControlsRow}>
-            <Pressable style={styles.inputUtilityBtn}>
-              <Feather name="plus-circle" size={20} color={theme.primary} />
-            </Pressable>
-            <Pressable style={styles.inputUtilityBtn}>
-              <Feather name="image" size={20} color={theme.primary} />
-            </Pressable>
-            <View style={[styles.textInputWrapper, { backgroundColor: isDark ? '#1f242c' : '#f0f2f5' }]}>
-              <TextInput
-                style={[styles.textInputMain, { color: theme.text }]}
-                value={inputText}
-                onChangeText={setInputText}
-                placeholder={connected ? `Message ${activeChannel}...` : "Connecting..."}
-                placeholderTextColor={theme.textSecondary}
-                editable={connected}
-                onSubmitEditing={() => handleSendMessage()}
-                returnKeyType="send"
-              />
-              <Pressable style={styles.emojiBtn}>
-                <Feather name="smile" size={18} color={theme.textSecondary} />
-              </Pressable>
-            </View>
-            <Pressable
-              style={[styles.mainSendBtn, { backgroundColor: connected ? theme.primary : theme.border }]}
-              onPress={() => handleSendMessage()}
-              disabled={!connected}
-            >
-              <Feather name="send" size={14} color="#ffffff" />
-            </Pressable>
-          </View>
+        <View style={styles.chatHeaderRight}>
+          <Pressable style={styles.headerIconBtn}>
+            <Feather name="phone" size={18} color={C.slate400} />
+          </Pressable>
+          <Pressable style={styles.headerIconBtn}>
+            <Feather name="video" size={18} color={C.slate400} />
+          </Pressable>
+          <Pressable style={styles.headerIconBtn}>
+            <Feather name="more-vertical" size={18} color={C.slate400} />
+          </Pressable>
         </View>
       </View>
-    );
-  };
 
-  // Right Sidebar: Channel Profile, Active Users roster, Network Parameters
-  const renderDetailsSidebar = () => {
-    const activeUnitsInChannel = users.filter((u) => u.channel === activeChannel || u.channel === 'all');
-    
-    return (
-      <View style={[styles.detailsSidebar, { backgroundColor: isDark ? '#0d1117' : '#f5f6f8', borderColor: theme.border }]}>
-        <ScrollView contentContainerStyle={styles.detailsScrollContent}>
-          <View style={styles.detailsHeader}>
-            <View style={[styles.detailsAvatarCircle, { backgroundColor: theme.primaryGlow }]}>
-              <Feather name="users" size={28} color={theme.primary} />
-            </View>
-            <Text style={[styles.detailsChannelName, { color: theme.text }]}>{activeChannel.toUpperCase()}</Text>
-            <Text style={[styles.detailsChannelSub, { color: theme.textSecondary }]}>Encrypted Tactical Channel</Text>
+      {/* Message Feed */}
+      <View style={styles.messageFeed}>
+        {connecting && filteredMessages.length === 0 ? (
+          <View style={styles.loadingWrapper}>
+            <ActivityIndicator size="small" color={C.emerald500} />
+            <Text style={styles.loadingText}>INITIALIZING SECURE COM CHANNELS...</Text>
+          </View>
+        ) : (
+          <ScrollView
+            ref={scrollViewRef}
+            style={styles.messageScroll}
+            contentContainerStyle={styles.messageScrollContent}
+          >
+            {filteredMessages.length === 0 ? (
+              <View style={styles.emptyWrapper}>
+                <Feather name="message-square" size={32} color={C.slate500} style={{ opacity: 0.4, marginBottom: 12 }} />
+                <Text style={styles.emptyText}>COM CHANNEL SECURED{'\n'}NO BROADCASTS YET</Text>
+              </View>
+            ) : (
+              filteredMessages.map((msg, index) => {
+                if (msg.isSystem) {
+                  return (
+                    <View key={msg.id} style={styles.systemMsgRow}>
+                      <Text style={styles.systemMsgText}>{`[${msg.timestamp}] *** ${msg.text}`}</Text>
+                    </View>
+                  );
+                }
+
+                const isSelf = msg.sender === callsign;
+                const prevMsg = index > 0 ? filteredMessages[index - 1] : null;
+                const nextMsg = index < filteredMessages.length - 1 ? filteredMessages[index + 1] : null;
+                const isConsecPrev = prevMsg && !prevMsg.isSystem && prevMsg.sender === msg.sender;
+                const isConsecNext = nextMsg && !nextMsg.isSystem && nextMsg.sender === msg.sender;
+
+                return (
+                  <View
+                    key={msg.id}
+                    style={[
+                      styles.msgWrapper,
+                      isSelf ? styles.msgWrapperRight : styles.msgWrapperLeft,
+                      isConsecPrev && { marginTop: 2 },
+                    ]}
+                  >
+                    {/* Sender name + time (first in group) */}
+                    {!isConsecPrev && !isSelf && (
+                      <View style={styles.msgMeta}>
+                        <Text style={[styles.msgSender, { color: msg.isSimulated ? '#f59e0b' : C.emerald400 }]}>
+                          {msg.sender}
+                        </Text>
+                        <Text style={styles.msgTime}>{msg.timestamp}</Text>
+                      </View>
+                    )}
+
+                    <View style={styles.msgRow}>
+                      {/* Avatar (left side, received messages) */}
+                      {!isSelf && (
+                        <View style={[
+                          styles.msgAvatar,
+                          { backgroundColor: msg.isSimulated ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.12)' }
+                        ]}>
+                          {!isConsecNext ? (
+                            <Text style={[
+                              styles.msgAvatarText,
+                              { color: msg.isSimulated ? '#f59e0b' : C.emerald400 }
+                            ]}>
+                              {msg.sender.substring(0, 2)}
+                            </Text>
+                          ) : null}
+                        </View>
+                      )}
+
+                      {/* Message Bubble — Messaging style */}
+                      <View style={[
+                        styles.bubble,
+                        isSelf ? styles.bubbleSelf : styles.bubbleOther,
+                        isSelf && isConsecPrev && { borderTopRightRadius: 4 },
+                        isSelf && isConsecNext && { borderBottomRightRadius: 4 },
+                        !isSelf && isConsecPrev && { borderTopLeftRadius: 4 },
+                        !isSelf && isConsecNext && { borderBottomLeftRadius: 4 },
+                        msg.isSimulated && !isSelf && { borderColor: 'rgba(245,158,11,0.3)' },
+                      ]}>
+                        <Text style={[styles.bubbleText, isSelf && { color: C.white }]}>
+                          {msg.text}
+                        </Text>
+
+                        {/* Timestamp + read receipt */}
+                        <View style={styles.bubbleFooter}>
+                          <Text style={[styles.bubbleTime, isSelf && { color: C.emerald200 }]}>
+                            {msg.timestamp ? msg.timestamp.split(':').slice(0, 2).join(':') : ''}
+                          </Text>
+                          {isSelf && (
+                            <Feather name="check-circle" size={10} color={C.emerald200} />
+                          )}
+                        </View>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })
+            )}
+          </ScrollView>
+        )}
+      </View>
+
+      {/* Footer Controls */}
+      <View style={styles.footer}>
+        {/* Quick Code Chips */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.quickCodesRow}
+        >
+          {QUICK_CODES.map((code, idx) => (
+            <Pressable
+              key={idx}
+              style={styles.quickCodeChip}
+              onPress={() => handleSendMessage(code.val)}
+              disabled={!connected}
+            >
+              <Text style={styles.quickCodeText}>{code.label}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+
+        {/* Input Row */}
+        <View style={styles.inputRow}>
+          <Pressable style={styles.inputUtilBtn}>
+            <Feather name="plus-circle" size={22} color={C.slate400} />
+          </Pressable>
+          <Pressable style={styles.inputUtilBtn}>
+            <Feather name="image" size={22} color={C.slate400} />
+          </Pressable>
+
+          {/* Text Input */}
+          <View style={styles.textInputWrapper}>
+            <TextInput
+              style={styles.textInput}
+              value={inputText}
+              onChangeText={setInputText}
+              placeholder={connected ? `Message ${activeChannel}...` : 'Connecting...'}
+              placeholderTextColor={C.slate500}
+              editable={connected}
+              onSubmitEditing={() => handleSendMessage()}
+              returnKeyType="send"
+            />
+            <Pressable style={styles.emojiBtn}>
+              <Feather name="smile" size={18} color={C.slate500} />
+            </Pressable>
           </View>
 
+          {/* Send Button */}
+          <Pressable
+            onPress={() => handleSendMessage()}
+            disabled={!connected || !inputText.trim()}
+            style={[
+              styles.sendBtn,
+              { backgroundColor: connected && inputText.trim() ? C.emerald600 : C.bg800 },
+            ]}
+          >
+            <Feather name="send" size={16} color={connected && inputText.trim() ? C.white : C.slate500} />
+          </Pressable>
+        </View>
+      </View>
+    </View>
+  );
+
+  // ─────────────────────────────────────────
+  //  RENDER: RIGHT DETAILS SIDEBAR
+  // ─────────────────────────────────────────
+  const renderDetailsSidebar = () => {
+    const activeUnits = users.filter((u) => u.channel === activeChannel || u.channel === 'all');
+    return (
+      <View style={styles.detailsSidebar}>
+        <ScrollView contentContainerStyle={styles.detailsContent}>
+          {/* Channel Icon */}
+          <View style={styles.detailsHeader}>
+            <View style={styles.detailsAvatarCircle}>
+              <Feather name="users" size={28} color={C.emerald400} />
+            </View>
+            <Text style={styles.detailsChannelName}>{activeChannel.toUpperCase()}</Text>
+            <Text style={styles.detailsChannelSub}>Encrypted Tactical Channel</Text>
+          </View>
+
+          {/* Security Stats */}
           <View style={styles.detailsSection}>
-            <Text style={[styles.detailsSectionTitle, { color: theme.textSecondary }]}>NETWORK SECURITY</Text>
-            <View style={[styles.detailsStatRow, { borderColor: theme.border }]}>
-              <Text style={[styles.detailsStatLabel, { color: theme.textSecondary }]}>COM LINK</Text>
-              <Text style={[styles.detailsStatVal, { color: connected ? theme.success : theme.danger }]}>
+            <Text style={styles.detailsSectionTitle}>NETWORK SECURITY</Text>
+            <View style={styles.detailsRow}>
+              <Text style={styles.detailsLabel}>COM LINK</Text>
+              <Text style={[styles.detailsValue, { color: connected ? C.emerald500 : '#ef4444' }]}>
                 {connected ? 'SECURE' : 'DISCONNECTED'}
               </Text>
             </View>
-            <View style={[styles.detailsStatRow, { borderColor: theme.border }]}>
-              <Text style={[styles.detailsStatLabel, { color: theme.textSecondary }]}>LATENCY</Text>
-              <Text style={[styles.detailsStatVal, { color: theme.text }]}>{latency}ms</Text>
+            <View style={styles.detailsRow}>
+              <Text style={styles.detailsLabel}>LATENCY</Text>
+              <Text style={styles.detailsValue}>{latency}ms</Text>
             </View>
-            <View style={[styles.detailsStatRow, { borderColor: theme.border }]}>
-              <Text style={[styles.detailsStatLabel, { color: theme.textSecondary }]}>ACTIVE CALLSIGN</Text>
-              <Text style={[styles.detailsStatVal, { color: theme.primary }]}>{callsign}</Text>
+            <View style={styles.detailsRow}>
+              <Text style={styles.detailsLabel}>CALLSIGN</Text>
+              <Text style={[styles.detailsValue, { color: C.emerald400 }]}>{callsign}</Text>
             </View>
           </View>
 
+          {/* Active Units */}
           <View style={styles.detailsSection}>
-            <Text style={[styles.detailsSectionTitle, { color: theme.textSecondary }]}>ACTIVE UNITS ({activeUnitsInChannel.length})</Text>
-            {activeUnitsInChannel.map((u, i) => (
-              <View key={`${u.callsign}-${i}`} style={styles.detailsUserItem}>
-                <View style={[styles.statusDotActive, { position: 'relative', marginRight: 8, bottom: 0, right: 0, backgroundColor: u.isSimulated ? theme.textSecondary : theme.success }]} />
-                <Text numberOfLines={1} style={[styles.detailsUserCallsign, { color: theme.text }]}>{u.callsign}</Text>
-                <Text style={[styles.detailsUserStatus, { color: u.isSimulated ? theme.textSecondary : theme.success }]}>{u.status}</Text>
+            <Text style={styles.detailsSectionTitle}>ACTIVE UNITS ({activeUnits.length})</Text>
+            {activeUnits.map((u, i) => (
+              <View key={`${u.callsign}-${i}`} style={styles.detailsUserRow}>
+                <View style={[styles.detailsUserDot, { backgroundColor: u.isSimulated ? C.slate500 : C.emerald500 }]} />
+                <Text numberOfLines={1} style={styles.detailsUserName}>{u.callsign}</Text>
+                <Text style={[styles.detailsUserStatus, { color: u.isSimulated ? C.slate500 : C.emerald500 }]}>
+                  {u.status}
+                </Text>
               </View>
             ))}
           </View>
@@ -648,14 +653,17 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
     );
   };
 
+  // ─────────────────────────────────────────
+  //  ROOT RENDER
+  // ─────────────────────────────────────────
   return (
-    <View style={[styles.cardContainer, { height: 600, overflow: 'hidden', borderWidth: 1, borderRadius: 12, borderColor: theme.border }]}>
-      <View style={{ flex: 1, flexDirection: 'row' }}>
+    <View style={styles.root}>
+      <View style={styles.inner}>
         {isLargeScreen ? (
           <>
             {renderSidebar()}
             {renderChatArea()}
-            {showInfoSidebar && renderDetailsSidebar()}
+            {renderDetailsSidebar()}
           </>
         ) : (
           <>
@@ -667,217 +675,449 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
   );
 }
 
+// ─────────────────────────────────────────
+//  STYLES
+// ─────────────────────────────────────────
 const styles = StyleSheet.create({
-  cardContainer: {
+  root: {
     width: '100%',
+    height: 600,
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: C.border,
+    backgroundColor: C.bg950,
   },
-  sidebarContainer: {
+  inner: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+
+  // ── Sidebar ─────────────────────────────
+  sidebar: {
     width: 280,
     height: '100%',
+    backgroundColor: C.bg900,
     borderRightWidth: 1,
+    borderRightColor: C.border,
     flexDirection: 'column',
   },
-  sidebarHeader: {
+  sidebarProfile: {
     padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+    backgroundColor: C.bg950,
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
+  profileAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: C.emerald600,
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  sidebarTitle: {
+  profileAvatarText: {
+    color: C.white,
+    fontWeight: 'bold',
     fontSize: 16,
+  },
+  profileName: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: C.white,
+  },
+  profileRole: {
+    fontSize: 9,
+    color: C.emerald400,
+    fontFamily: Fonts?.mono || 'monospace',
     fontWeight: 'bold',
   },
-  callsignBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
+  editCallsignBtn: {
+    marginLeft: 'auto',
+    padding: 6,
+    backgroundColor: 'rgba(52,211,153,0.1)',
+    borderRadius: 8,
     borderWidth: 1,
+    borderColor: 'rgba(52,211,153,0.2)',
   },
-  callsignBadgeText: {
+
+  callsignEditor: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+    backgroundColor: C.bg900,
+  },
+  callsignInput: {
+    height: 32,
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    fontSize: 11,
+    color: C.slate200,
+    borderColor: C.border,
+    backgroundColor: C.bg800,
+    fontFamily: Fonts?.mono || 'monospace',
+  },
+  callsignBtns: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 8,
+  },
+  callsignSave: {
+    flex: 1,
+    height: 28,
+    borderRadius: 6,
+    backgroundColor: C.emerald600,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  callsignSaveText: {
+    color: C.white,
     fontSize: 10,
     fontWeight: 'bold',
   },
-  activeUsersSection: {
+  callsignCancel: {
+    flex: 1,
+    height: 28,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: C.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  callsignCancelText: {
+    color: C.slate400,
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+
+  searchRow: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+  },
+  searchWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C.bg800,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: C.border,
+    paddingHorizontal: 10,
+    height: 36,
+  },
+  searchIcon: { marginRight: 6 },
+  searchInput: {
+    flex: 1,
+    fontSize: 12,
+    color: C.slate200,
+    fontWeight: '500',
+  },
+
+  onlineSection: {
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
-    marginBottom: 8,
+    borderBottomColor: C.border,
   },
-  sectionSubtitle: {
+  sectionLabel: {
     fontSize: 9,
     fontWeight: 'bold',
+    color: C.slate500,
     letterSpacing: 0.8,
     paddingHorizontal: 16,
     marginBottom: 6,
   },
-  activeUsersRow: {
+  onlineRow: {
     paddingHorizontal: 12,
     gap: 12,
     flexDirection: 'row',
   },
-  activeUserBubble: {
+  onlineBubble: {
     alignItems: 'center',
     width: 55,
   },
-  avatarCircleLarge: {
+  onlineAvatar: {
     width: 40,
     height: 40,
     borderRadius: 20,
+    backgroundColor: 'rgba(16,185,129,0.12)',
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
   },
-  avatarCircleTextLarge: {
+  onlineAvatarText: {
     fontSize: 12,
     fontWeight: 'bold',
+    color: C.emerald400,
   },
-  statusDotActive: {
+  onlineDot: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
     width: 10,
     height: 10,
     borderRadius: 5,
     borderWidth: 1.5,
-    borderColor: '#0d1117',
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
+    borderColor: C.bg900,
   },
-  activeUserCallsign: {
+  onlineCallsign: {
     fontSize: 8.5,
+    color: C.slate400,
     marginTop: 4,
     textAlign: 'center',
   },
-  sidebarList: {
+
+  contactList: {
     flex: 1,
   },
-  channelItem: {
+  contactItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 8,
-    marginHorizontal: 8,
-    marginVertical: 2,
-    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+    gap: 12,
   },
-  channelIconContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  contactItemActive: {
+    backgroundColor: C.bg800,
+  },
+  contactAvatarWrapper: {
+    position: 'relative',
+    width: 42,
+    height: 42,
+  },
+  contactAvatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: C.bg800,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: C.border,
   },
-  channelInfo: {
+  contactAvatarActive: {
+    backgroundColor: 'rgba(16,185,129,0.12)',
+    borderColor: C.emerald500,
+  },
+  contactAvatarText: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: C.slate400,
+    fontFamily: Fonts?.mono || 'monospace',
+  },
+  contactAvatarTextActive: {
+    color: C.emerald400,
+  },
+  contactStatusDot: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: C.bg900,
+  },
+  contactInfo: {
     flex: 1,
     justifyContent: 'center',
   },
-  channelInfoTop: {
+  contactInfoTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 2,
   },
-  channelNameText: {
+  contactName: {
     fontSize: 12,
     fontWeight: '600',
-  },
-  channelTimeText: {
-    fontSize: 9,
-  },
-  channelLastMsgText: {
-    fontSize: 10,
-  },
-  chatAreaContainer: {
+    color: C.slate200,
     flex: 1,
-    height: '100%',
-    flexDirection: 'column',
   },
-  chatHeader: {
-    height: 56,
-    borderBottomWidth: 1,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  headerAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerChannelName: {
-    fontSize: 13,
+  contactNameActive: {
+    color: C.emerald400,
     fontWeight: 'bold',
   },
-  indicatorDot: {
+  contactTime: {
+    fontSize: 9,
+    color: C.slate500,
+    marginLeft: 4,
+  },
+  contactLastMsg: {
+    fontSize: 10,
+    color: C.slate500,
+  },
+  unreadBadge: {
+    backgroundColor: C.emerald500,
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 5,
+  },
+  unreadText: {
+    color: C.white,
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+
+  // ── Chat Area ────────────────────────────
+  chatArea: {
+    flex: 1,
+    flexDirection: 'column',
+    backgroundColor: C.bg950,
+  },
+  chatHeader: {
+    height: 64,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+    backgroundColor: C.bg900,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+  },
+  chatHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  backBtn: {
+    marginRight: 4,
+    padding: 4,
+  },
+  chatHeaderAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(16,185,129,0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: C.border,
+    position: 'relative',
+  },
+  chatHeaderAvatarText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: C.emerald400,
+    fontFamily: Fonts?.mono || 'monospace',
+  },
+  chatHeaderDot: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: C.bg900,
+  },
+  chatHeaderName: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: C.white,
+  },
+  chatHeaderStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 1,
+  },
+  chatStatusDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
   },
-  headerStatusText: {
+  chatHeaderStatus: {
     fontSize: 9,
+    color: C.slate400,
+    fontFamily: Fonts?.mono || 'monospace',
     fontWeight: '600',
   },
+  chatHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
   headerIconBtn: {
-    padding: 6,
+    padding: 8,
+    borderRadius: 20,
   },
-  backButton: {
-    padding: 4,
-    marginRight: -4,
-  },
-  chatFeedContainer: {
+
+  // ── Message Feed ─────────────────────────
+  messageFeed: {
     flex: 1,
-    overflow: 'hidden',
+    backgroundColor: C.bg950,
   },
-  loadingContainer: {
+  loadingWrapper: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    gap: 8,
+  },
+  loadingText: {
+    fontSize: 10,
+    color: C.slate500,
+    fontFamily: Fonts?.mono || 'monospace',
   },
   messageScroll: {
     flex: 1,
   },
-  messageContent: {
-    padding: 16,
+  messageScrollContent: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
     flexGrow: 1,
   },
-  emptyContainer: {
+  emptyWrapper: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    paddingTop: 60,
   },
   emptyText: {
     fontSize: 10,
+    color: C.slate500,
     textAlign: 'center',
+    fontFamily: Fonts?.mono || 'monospace',
+    letterSpacing: 0.5,
+    lineHeight: 18,
   },
-  systemMsgContainer: {
+  systemMsgRow: {
     marginVertical: 8,
     alignItems: 'center',
   },
-  systemLogText: {
+  systemMsgText: {
     fontSize: 9,
+    color: C.slate500,
     fontFamily: Fonts?.mono || 'monospace',
     textAlign: 'center',
   },
-  messageBubbleWrapper: {
+
+  // ── Message Bubble ───────────────────────
+  msgWrapper: {
     marginBottom: 6,
-    maxWidth: '75%',
+    maxWidth: '80%',
   },
-  msgLeft: {
+  msgWrapperLeft: {
     alignSelf: 'flex-start',
   },
-  msgRight: {
+  msgWrapperRight: {
     alignSelf: 'flex-end',
   },
-  msgHeader: {
+  msgMeta: {
     flexDirection: 'row',
     alignItems: 'baseline',
+    gap: 6,
     marginBottom: 2,
     marginLeft: 32,
-    gap: 6,
   },
   msgSender: {
     fontSize: 9,
@@ -886,115 +1126,165 @@ const styles = StyleSheet.create({
   },
   msgTime: {
     fontSize: 8,
+    color: C.slate500,
   },
-  avatarCircle: {
+  msgRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  msgAvatar: {
     width: 24,
     height: 24,
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarText: {
-    fontSize: 8.5,
+  msgAvatarText: {
+    fontSize: 8,
     fontWeight: 'bold',
   },
-  messageBubble: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
+
+  // Messaging-style bubbles
+  bubble: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 20,
     maxWidth: '100%',
+    borderWidth: 1,
   },
   bubbleSelf: {
+    backgroundColor: C.emerald600,
+    borderColor: C.emerald600,
     borderBottomRightRadius: 4,
   },
   bubbleOther: {
+    backgroundColor: C.bg800,
+    borderColor: C.border,
     borderBottomLeftRadius: 4,
   },
-  messageText: {
-    fontSize: 12.5,
-    lineHeight: 16,
+  bubbleText: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: C.slate200,
   },
-  bottomControlsContainer: {
-    borderTopWidth: 1,
-    padding: 10,
-    flexDirection: 'column',
-  },
-  quickKeysWrapper: {
-    marginBottom: 8,
-  },
-  quickKeysScroll: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  quickKeyBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-  },
-  quickKeyBadgeText: {
-    fontSize: 9,
-    fontWeight: 'bold',
-  },
-  inputControlsRow: {
+  bubbleFooter: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    justifyContent: 'flex-end',
+    gap: 3,
+    marginTop: 4,
   },
-  inputUtilityBtn: {
-    padding: 4,
+  bubbleTime: {
+    fontSize: 9,
+    color: C.slate500,
+  },
+
+  // ── Footer ───────────────────────────────
+  footer: {
+    borderTopWidth: 1,
+    borderTopColor: C.border,
+    backgroundColor: C.bg900,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  quickCodesRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 10,
+  },
+  quickCodeChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 14,
+    backgroundColor: C.bg800,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  quickCodeText: {
+    fontSize: 9,
+    fontWeight: 'bold',
+    color: C.slate400,
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  inputUtilBtn: {
+    padding: 6,
   },
   textInputWrapper: {
     flex: 1,
-    height: 36,
-    borderRadius: 18,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
+    backgroundColor: C.bg800,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: C.border,
+    paddingHorizontal: 14,
+    height: 44,
   },
-  textInputMain: {
+  textInput: {
     flex: 1,
-    fontSize: 12,
+    fontSize: 13,
+    color: C.slate200,
     paddingVertical: 0,
   },
   emojiBtn: {
-    padding: 2,
+    padding: 4,
   },
-  mainSendBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+  sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: C.emerald600,
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
   },
+
+  // ── Details Sidebar ──────────────────────
   detailsSidebar: {
-    width: 250,
+    width: 220,
     height: '100%',
+    backgroundColor: C.bg900,
     borderLeftWidth: 1,
+    borderLeftColor: C.border,
   },
-  detailsScrollContent: {
+  detailsContent: {
     padding: 16,
     alignItems: 'center',
   },
   detailsHeader: {
     alignItems: 'center',
-    marginVertical: 16,
+    marginBottom: 16,
   },
   detailsAvatarCircle: {
     width: 60,
     height: 60,
     borderRadius: 30,
+    backgroundColor: 'rgba(16,185,129,0.12)',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(16,185,129,0.2)',
   },
   detailsChannelName: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 'bold',
+    color: C.white,
+    textAlign: 'center',
   },
   detailsChannelSub: {
-    fontSize: 10,
+    fontSize: 9,
+    color: C.slate500,
     marginTop: 2,
+    textAlign: 'center',
   },
   detailsSection: {
     width: '100%',
@@ -1003,73 +1293,46 @@ const styles = StyleSheet.create({
   detailsSectionTitle: {
     fontSize: 9,
     fontWeight: 'bold',
+    color: C.slate500,
     letterSpacing: 0.8,
     marginBottom: 8,
   },
-  detailsStatRow: {
+  detailsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingVertical: 8,
     borderBottomWidth: 1,
+    borderBottomColor: C.border,
   },
-  detailsStatLabel: {
+  detailsLabel: {
     fontSize: 10,
     fontWeight: '600',
+    color: C.slate500,
   },
-  detailsStatVal: {
+  detailsValue: {
     fontSize: 10,
     fontWeight: 'bold',
+    color: C.slate200,
   },
-  detailsUserItem: {
+  detailsUserRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 6,
   },
-  detailsUserCallsign: {
+  detailsUserDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  detailsUserName: {
     fontSize: 11,
     fontWeight: '600',
+    color: C.slate200,
     flex: 1,
   },
   detailsUserStatus: {
     fontSize: 9,
     fontWeight: 'bold',
   },
-  callsignEditorDropdown: {
-    padding: 12,
-    borderBottomWidth: 1,
-    flexDirection: 'column',
-  },
-  callsignInput: {
-    height: 32,
-    borderWidth: 1,
-    borderRadius: 4,
-    paddingHorizontal: 8,
-    fontSize: 11,
-    fontFamily: Fonts?.mono || 'monospace',
-  },
-  inlineSaveBtn: {
-    flex: 1,
-    height: 28,
-    borderRadius: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  inlineBtnText: {
-    color: '#ffffff',
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  inlineCancelBtn: {
-    flex: 1,
-    height: 28,
-    borderRadius: 4,
-    borderWidth: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  inlineCancelBtnText: {
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
 });
-

@@ -17,6 +17,9 @@ const PORT = process.env.PORT || 3000;
 // Track active users
 const activeUsers = new Map();
 
+// Track active camera feeds  { socketId -> feedData }
+const cameraFeeds = new Map();
+
 // Helper to generate timestamps
 function getTimestamp() {
   const now = new Date();
@@ -26,6 +29,12 @@ function getTimestamp() {
 // Preset channels
 const CHANNELS = ['#dispatch', '#tactical-1', '#intel-ops'];
 
+function broadcastCameraFeeds() {
+  const feeds = [];
+  cameraFeeds.forEach((feed) => feeds.push(feed));
+  io.emit('camera_feeds', feeds);
+}
+
 // Sockets setup below
 
 io.on('connection', (socket) => {
@@ -34,6 +43,7 @@ io.on('connection', (socket) => {
   // Default callsign until user registers
   let clientCallsign = `UNIT-${socket.id.substring(0, 4).toUpperCase()}`;
   let clientChannel = '#dispatch';
+  let hasCamera = false;
 
   socket.join(clientChannel);
 
@@ -44,9 +54,13 @@ io.on('connection', (socket) => {
     activeChannel: clientChannel,
   });
 
+  // Send current camera feeds to this new client
+  const currentFeeds = [];
+  cameraFeeds.forEach((feed) => currentFeeds.push(feed));
+  socket.emit('camera_feeds', currentFeeds);
+
   // Handle register/update callsign
   socket.on('register', (data) => {
-    const oldCallsign = clientCallsign;
     clientCallsign = data.callsign.toUpperCase();
     activeUsers.set(socket.id, { callsign: clientCallsign, channel: clientChannel });
     console.log(`[SERVER] Socket ${socket.id} registered callsign: ${clientCallsign}`);
@@ -65,6 +79,70 @@ io.on('connection', (socket) => {
     });
   });
 
+  // ── Camera feed events ───────────────────────────────────────────────────
+  // Officer registers their camera (called when body cam page loads in officer mode)
+  socket.on('camera_register', (data) => {
+    hasCamera = true;
+    const feed = {
+      id: socket.id,
+      callsign: data.callsign || clientCallsign,
+      unit: data.unit || clientCallsign,
+      isRecording: data.isRecording ?? true,
+      isStreaming: data.isStreaming ?? true,
+      lat: data.lat ?? 25.1972,
+      lng: data.lng ?? 55.2744,
+      battery: data.battery ?? 100,
+      signal: data.signal ?? 5,
+      status: 'ACTIVE',
+      fps: data.fps ?? 30,
+      connectedAt: getTimestamp(),
+    };
+    cameraFeeds.set(socket.id, feed);
+    console.log(`[SERVER] Camera registered: ${feed.callsign}`);
+    broadcastCameraFeeds();
+  });
+
+  // Officer sends a live status update
+  socket.on('camera_update', (data) => {
+    if (!cameraFeeds.has(socket.id)) return;
+    const existing = cameraFeeds.get(socket.id);
+    const updated = {
+      ...existing,
+      ...data,
+      id: socket.id,               // never override id
+      callsign: existing.callsign, // never override callsign
+    };
+    cameraFeeds.set(socket.id, updated);
+    broadcastCameraFeeds();
+  });
+
+  // Admin requests latest feeds
+  socket.on('camera_get_feeds', () => {
+    const feeds = [];
+    cameraFeeds.forEach((f) => feeds.push(f));
+    socket.emit('camera_feeds', feeds);
+  });
+
+  // Officer voluntarily unregisters their camera (e.g. stops streaming or role switch)
+  socket.on('camera_unregister', () => {
+    if (cameraFeeds.has(socket.id)) {
+      cameraFeeds.delete(socket.id);
+      hasCamera = false;
+      console.log(`[SERVER] Camera unregistered: ${clientCallsign}`);
+      broadcastCameraFeeds();
+    }
+  });
+
+  // Officer broadcasts a camera frame (base64)
+  socket.on('camera_frame', (data) => {
+    socket.broadcast.emit('camera_frame', {
+      id: socket.id,
+      frame: data.frame,
+    });
+  });
+
+
+  // ── Existing events ──────────────────────────────────────────────────────
   // Handle joining a channel
   socket.on('join_channel', (channel) => {
     if (!CHANNELS.includes(channel)) return;
@@ -136,6 +214,13 @@ io.on('connection', (socket) => {
     console.log(`[SERVER] Client disconnected: ${clientCallsign} (${socket.id})`);
     activeUsers.delete(socket.id);
 
+    // Remove camera feed if registered
+    if (hasCamera && cameraFeeds.has(socket.id)) {
+      cameraFeeds.delete(socket.id);
+      console.log(`[SERVER] Camera feed removed: ${clientCallsign}`);
+      broadcastCameraFeeds();
+    }
+
     io.to(clientChannel).emit('message', {
       id: `sys-${Date.now()}`,
       sender: 'SYSTEM',
@@ -163,7 +248,7 @@ function broadcastUserList() {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', clientsCount: io.engine.clientsCount });
+  res.json({ status: 'ok', clientsCount: io.engine.clientsCount, cameraFeeds: cameraFeeds.size });
 });
 
 server.listen(PORT, () => {
