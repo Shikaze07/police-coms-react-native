@@ -36,43 +36,42 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider value={isDark ? customDarkTheme : customLightTheme}>
-        <Drawer
-          drawerContent={(props) => <CustomDrawer {...(props as any)} />}
-          screenOptions={{
-            headerStyle: {
-              backgroundColor: theme.backgroundElement,
-              shadowColor: 'transparent',
-              elevation: 0,
-              borderBottomWidth: 1,
-              borderBottomColor: theme.border,
-            },
-            headerTintColor: theme.text,
-            headerTitleStyle: {
-              fontWeight: 'bold',
-              fontSize: 13,
-              letterSpacing: 1,
-            },
-            drawerStyle: {
-              width: 300,
-              backgroundColor: theme.background,
-            },
-            swipeEnabled: true,
-          }}
-        >
-          <Drawer.Screen
-            name="index"
-            options={{
-              title: 'HQ COMMAND CENTER',
+          <Drawer
+            drawerContent={(props) => <CustomDrawer {...(props as any)} />}
+            screenOptions={{
+              headerStyle: {
+                backgroundColor: theme.backgroundElement,
+                elevation: 0,
+                borderBottomWidth: 1,
+                borderBottomColor: theme.border,
+              },
+              headerTintColor: theme.text,
+              headerTitleStyle: {
+                fontWeight: 'bold',
+                fontSize: 13,
+                letterSpacing: 1,
+              },
+              drawerStyle: {
+                width: 300,
+                backgroundColor: theme.background,
+              },
+              swipeEnabled: true,
             }}
-          />
-          <Drawer.Screen
-            name="module/[id]"
-            options={{
-              title: 'POLICECOMS',
-              // Hide from drawer header (it will be loaded dynamically)
-            }}
-          />
-        </Drawer>
+          >
+            <Drawer.Screen
+              name="index"
+              options={{
+                title: 'HQ COMMAND CENTER',
+              }}
+            />
+            <Drawer.Screen
+              name="module/[id]"
+              options={{
+                title: 'POLICECOMS',
+                // Hide from drawer header (it will be loaded dynamically)
+              }}
+            />
+          </Drawer>
       </ThemeProvider>
     </GestureHandlerRootView>
   );

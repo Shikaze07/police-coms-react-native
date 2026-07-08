@@ -110,10 +110,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 2,
+    boxShadow: '0px 0px 2px rgba(0,0,0,0.8)',
   },
   radarCoordsPanel: {
     position: 'absolute',

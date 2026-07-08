@@ -15,9 +15,9 @@ import {
 import { Feather } from '@expo/vector-icons';
 import { Spacing, Fonts } from '../../../constants/theme';
 import { io } from 'socket.io-client';
-import Constants from 'expo-constants';
 import { db } from '../../lib/firebase';
 import { collection, addDoc, query, orderBy, limit, getDocs } from 'firebase/firestore';
+import { getSocketUrl } from '../../lib/network';
 
 // --- Constants ---
 const C = {
@@ -34,22 +34,6 @@ const C = {
   emerald200: '#a7f3d0',
   white: '#ffffff',
   border: '#1e293b',
-};
-
-// --- URL Helper ---
-const getSocketUrl = () => {
-  if (Platform.OS === 'web') {
-    if (typeof window !== 'undefined' && window.location) {
-      const hostname = window.location.hostname;
-      return `http://${hostname}:3000`;
-    }
-  }
-  const debuggerHost = Constants.expoConfig?.hostUri;
-  if (debuggerHost) {
-    const ip = debuggerHost.split(':')[0];
-    return `http://${ip}:3000`;
-  }
-  return 'http://localhost:3000';
 };
 
 // --- Types ---
@@ -145,49 +129,60 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
 
   // Socket.io connection
   useEffect(() => {
-    const serverUrl = getSocketUrl();
+    let isMounted = true;
     setConnecting(true);
 
-    const socket = io(serverUrl, {
-      transports: ['websocket'],
-      forceNew: true,
-      reconnectionAttempts: 5,
-    });
+    const connectSocket = async () => {
+      const serverUrl = await getSocketUrl();
+      if (!isMounted) return;
 
-    socketRef.current = socket;
+      const socket = io(serverUrl, {
+        transports: ['websocket'],
+        forceNew: true,
+        reconnectionAttempts: 5,
+      });
 
-    socket.on('connect', () => {
-      setConnected(true);
-      setConnecting(false);
-      const start = Date.now();
-      socket.emit('ping');
-      socket.once('pong', () => setLatency(Date.now() - start));
-    });
+      socketRef.current = socket;
 
-    const latencyInterval = setInterval(() => {
-      if (socket.connected) {
+      socket.on('connect', () => {
+        setConnected(true);
+        setConnecting(false);
         const start = Date.now();
         socket.emit('ping');
         socket.once('pong', () => setLatency(Date.now() - start));
-      }
-    }, 10000);
+      });
 
-    socket.on('init', (data: { defaultCallsign: string; channels: string[]; activeChannel: string }) => {
-      setChannels(data.channels);
-      setActiveChannel(data.activeChannel);
-      setCallsign(data.defaultCallsign);
-      setTempCallsign(data.defaultCallsign);
-      socket.emit('register', { callsign: data.defaultCallsign });
-    });
+      const latencyInterval = setInterval(() => {
+        if (socket.connected) {
+          const start = Date.now();
+          socket.emit('ping');
+          socket.once('pong', () => setLatency(Date.now() - start));
+        }
+      }, 10000);
 
-    socket.on('message', (msg: Message) => setMessages((prev) => [...prev, msg]));
-    socket.on('user_list', (userList: User[]) => setUsers(userList));
-    socket.on('disconnect', () => { setConnected(false); setConnecting(false); });
-    socket.on('connect_error', () => { setConnected(false); setConnecting(false); });
+      socket.on('init', (data: { defaultCallsign: string; channels: string[]; activeChannel: string }) => {
+        setChannels(data.channels);
+        setActiveChannel(data.activeChannel);
+        setCallsign(data.defaultCallsign);
+        setTempCallsign(data.defaultCallsign);
+        socket.emit('register', { callsign: data.defaultCallsign, clientType: 'chat' });
+      });
+
+      socket.on('message', (msg: Message) => setMessages((prev) => [...prev, msg]));
+      socket.on('user_list', (userList: User[]) => setUsers(userList));
+      socket.on('disconnect', () => { setConnected(false); setConnecting(false); });
+      socket.on('connect_error', () => { setConnected(false); setConnecting(false); });
+
+      return () => {
+        clearInterval(latencyInterval);
+        socket.disconnect();
+      };
+    };
+
+    void connectSocket();
 
     return () => {
-      clearInterval(latencyInterval);
-      socket.disconnect();
+      isMounted = false;
     };
   }, []);
 
@@ -230,7 +225,7 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
     const formatted = tempCallsign.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
     setCallsign(formatted);
     setIsEditingCallsign(false);
-    socketRef.current?.emit('register', { callsign: formatted });
+    socketRef.current?.emit('register', { callsign: formatted, clientType: 'chat' });
   };
 
   const handleSelectChannel = (channel: string) => {
@@ -449,13 +444,13 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
             {filteredMessages.length === 0 ? (
               <View style={styles.emptyWrapper}>
                 <Feather name="message-square" size={32} color={C.slate500} style={{ opacity: 0.4, marginBottom: 12 }} />
-                <Text style={styles.emptyText}>COM CHANNEL SECURED{'\n'}NO BROADCASTS YET</Text>
+                <Text style={styles.emptyText}>COM CHANNEL SECURED{"\n"}NO BROADCASTS YET</Text>
               </View>
             ) : (
               filteredMessages.map((msg, index) => {
                 if (msg.isSystem) {
                   return (
-                    <View key={msg.id} style={styles.systemMsgRow}>
+                    <View key={`${msg.id}-${index}`} style={styles.systemMsgRow}>
                       <Text style={styles.systemMsgText}>{`[${msg.timestamp}] *** ${msg.text}`}</Text>
                     </View>
                   );
@@ -469,7 +464,7 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
 
                 return (
                   <View
-                    key={msg.id}
+                    key={`${msg.id}-${index}`}
                     style={[
                       styles.msgWrapper,
                       isSelf ? styles.msgWrapperRight : styles.msgWrapperLeft,
@@ -1240,10 +1235,7 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: C.emerald600,
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
+    boxShadow: `0px 2px 8px ${C.emerald600}`,
     elevation: 4,
   },
 

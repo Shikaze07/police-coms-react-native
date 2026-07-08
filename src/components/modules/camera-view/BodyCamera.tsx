@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
+  Alert,
+  PermissionsAndroid,
   View,
   Text,
   StyleSheet,
   Pressable,
-  Alert,
   ScrollView,
   TextInput,
   Platform,
@@ -230,6 +231,25 @@ export default function BodyCamera({ theme, isDark }: { theme: any; isDark: bool
   // ── Officer: request camera + mic and start streaming ──────────────────────
   const startStream = async () => {
     setPermError('');
+    if (Platform.OS === 'android') {
+      const permissionResult = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.CAMERA,
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      ]);
+
+      const denied = Object.values(permissionResult).some(
+        (result) => result !== PermissionsAndroid.RESULTS.GRANTED,
+      );
+
+      if (denied) {
+        const msg = 'Camera and microphone access is required before body-cam streaming can start.';
+        setPermError(msg);
+        addLog(`[ERROR] ${msg}`);
+        Alert.alert('Permissions required', msg);
+        return;
+      }
+    }
+
     if (Platform.OS !== 'web') {
       // Native: just register without actual media
       doRegisterCamera();

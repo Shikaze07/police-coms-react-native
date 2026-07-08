@@ -1,5 +1,4 @@
 import { Feather } from '@expo/vector-icons';
-import Constants from 'expo-constants';
 import { useEffect, useRef, useState } from 'react';
 import {
   Platform,
@@ -10,9 +9,15 @@ import {
   TextInput,
   View,
   useWindowDimensions,
+  Alert,
 } from 'react-native';
+import { requestRecordingPermissionsAsync, getRecordingPermissionsAsync, createAudioPlayer, useAudioRecorder, RecordingPresets, setAudioModeAsync } from 'expo-audio';
+import { Paths, File, EncodingType } from 'expo-file-system';
 import { io } from 'socket.io-client';
 import { Fonts, Spacing } from '../../../constants/theme';
+import { getSocketUrl } from '../../lib/network';
+import { db } from '../../lib/firebase';
+import { collection, addDoc, query, orderBy, limit, getDocs } from 'firebase/firestore';
 
 // ─── Color constants (mirrors web slate palette) ────────────────────────────
 const C = {
@@ -37,18 +42,6 @@ const C = {
   emerald500: '#10b981',
 };
 
-// ─── Socket URL ──────────────────────────────────────────────────────────────
-const getSocketUrl = () => {
-  if (Platform.OS === 'web') {
-    if (typeof window !== 'undefined' && window.location) {
-      return `http://${window.location.hostname}:3000`;
-    }
-  }
-  const debuggerHost = Constants.expoConfig?.hostUri;
-  if (debuggerHost) return `http://${debuggerHost.split(':')[0]}:3000`;
-  return 'http://localhost:3000';
-};
-
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface Channel {
   id: string;
@@ -68,6 +61,7 @@ interface RadioMessage {
   timestamp: Date;
   duration?: number;
   audioUrl?: string; // data URL for web audio playback
+  channel: string;
 }
 
 // ─── Static Data ─────────────────────────────────────────────────────────────
@@ -89,33 +83,35 @@ const chanToSocket = (id: string) => {
   return map[id] || '#dispatch';
 };
 
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean }) {
   const socketRef        = useRef<any>(null);
   const mediaRecorderRef = useRef<any>(null);
+  const recorder          = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const audioChunksRef   = useRef<Blob[]>([]);
   const scrollViewRef    = useRef<ScrollView>(null);
-  // Map of messageId → HTMLAudioElement (web only)
+  // Map of messageId → HTMLAudioElement (web) or AudioPlayer (native)
   const audioElementsRef = useRef<Record<string, any>>({});
   // IDs of messages we sent ourselves (to ignore server echo-back)
   const sentMsgIds = useRef<Set<string>>(new Set());
+  const isPressingRef    = useRef(false);
+  const startTimeRef     = useRef<number>(0);
 
   const [connected,      setConnected]      = useState(false);
-  const [networkLatency, setNetworkLatency] = useState(12);
+  const [connecting,     setConnecting]     = useState(true);
   const [callsign,       setCallsign]       = useState('');
 
   const [channels,       setChannels]       = useState<Channel[]>(CHANNELS);
   const [activeChannel,  setActiveChannel]  = useState<Channel>(CHANNELS[0]);
-  const [messages,       setMessages]       = useState<RadioMessage[]>([
-    {
-      id: 'm0',
-      sender: 'DISPATCH',
-      senderId: 'dispatch',
-      type: 'TEXT',
-      content: 'Secure tactical datalink established.',
-      timestamp: new Date(),
-    },
-  ]);
+
+  const activeChannelRef = useRef(activeChannel);
+  useEffect(() => {
+    activeChannelRef.current = activeChannel;
+  }, [activeChannel]);
+
+  const [messages,       setMessages]       = useState<RadioMessage[]>([]);
 
   const [isPTTActive,    setIsPTTActive]    = useState(false);
   const [pttPosition,    setPttPosition]    = useState<'left' | 'right'>('right');
@@ -134,56 +130,111 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
     if (isLargeScreen) setMobileView('chat');
   }, [isLargeScreen]);
 
+  // Request microphone permission early on mount (all platforms)
+  useEffect(() => {
+    const requestInitialPermission = async () => {
+      if (Platform.OS === 'web' && navigator.mediaDevices?.getUserMedia) {
+        // Web: trigger browser prompt early so PTT works instantly
+        navigator.mediaDevices.getUserMedia({ audio: true })
+          .then(stream => { stream.getTracks().forEach(t => t.stop()); })
+          .catch(err => {
+            console.warn('[PTT] Early web mic prompt declined:', err);
+            if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+              console.warn('[PTT] Tip: Use HTTPS or localhost to enable mic access on remote devices.');
+            }
+          });
+      } else if (Platform.OS !== 'web') {
+        // Native Android/iOS: use modern expo-audio
+        try {
+          const { status } = await requestRecordingPermissionsAsync();
+          if (status !== 'granted') {
+            console.warn('[PTT] Microphone permission not granted:', status);
+          }
+        } catch (err) {
+          console.warn('[PTT] expo-audio early permission request error:', err);
+        }
+      }
+    };
+    void requestInitialPermission();
+  }, []);
+
   // ── Socket ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    const serverUrl = getSocketUrl();
-    const socket = io(serverUrl, { transports: ['websocket'], forceNew: true, reconnectionAttempts: 5 });
-    socketRef.current = socket;
+    let isMounted = true;
+    let socket: any = null;
+    let latTimer: any = null;
+    setConnecting(true);
 
-    socket.on('connect', () => {
-      setConnected(true);
-      const pttCall = `WT-${(socket.id || 'stub').substring(0, 4).toUpperCase()}`;
-      setCallsign(pttCall);
-      socket.emit('register', { callsign: pttCall });
-      socket.emit('join_channel', chanToSocket(activeChannel.id));
+    const connectSocket = async () => {
+      const serverUrl = await getSocketUrl();
+      if (!isMounted) return;
 
-      const start = Date.now();
-      socket.emit('ping');
-      socket.once('pong', () => setNetworkLat(Date.now() - start));
-    });
+      socket = io(serverUrl, { transports: ['websocket'], forceNew: true, reconnectionAttempts: 5 });
+      socketRef.current = socket;
 
-    // Incoming text messages from other users
-    socket.on('message', (msg: any) => {
-      // Skip messages we sent ourselves (already added optimistically)
-      if (sentMsgIds.current.has(msg.id)) {
-        sentMsgIds.current.delete(msg.id); // clean up
-        return;
-      }
-      // Also skip system messages — they show in EMessenger, not here
-      if (msg.isSystem) return;
-      const incoming: RadioMessage = {
-        id: msg.id || Date.now().toString(),
-        sender: msg.sender || 'UNIT',
-        senderId: 'remote',
-        type: 'TEXT',
-        content: msg.text || '',
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, incoming]);
-    });
+      socket.on('connect', () => {
+        setConnected(true);
+        setConnecting(false);
+        // Register with a radio callsign derived from socket id
+        const pttCall = `WT-${(socket.id || 'stub').substring(0, 4).toUpperCase()}`;
+        setCallsign(pttCall);
+        socket.emit('register', { callsign: pttCall, clientType: 'radio' });
+        socket.emit('join_channel', chanToSocket(activeChannelRef.current.id));
 
-    socket.on('voice_transmit', (data: { sender: string; audio: string }) => {
-      playVoiceBroadcast(data.audio, data.sender);
-    });
+        const start = Date.now();
+        socket.emit('ping');
+        socket.once('pong', () => setNetworkLat(Date.now() - start));
 
-    socket.on('disconnect', () => setConnected(false));
-    socket.on('connect_error', () => setConnected(false));
+        latTimer = setInterval(() => {
+          if (socket.connected) {
+            setNetworkLat(10 + Math.floor(Math.random() * 8));
+          }
+        }, 5000);
+      });
 
-    const latTimer = setInterval(() => {
-      setNetworkLat(10 + Math.floor(Math.random() * 8));
-    }, 5000);
+      // Server init — use server-provided callsign if no radio callsign set yet
+      socket.on('init', (data: { defaultCallsign: string; channels: string[]; activeChannel: string }) => {
+        // Only use server callsign on first connect; radio generates its own via socket.id
+        // But we use the channels list from server if available
+        // (ERadio uses its own CHANNELS static list, so no-op here)
+      });
 
-    return () => { clearInterval(latTimer); socket.disconnect(); };
+      // Incoming text messages from other users
+      socket.on('message', (msg: any) => {
+        // Skip system messages (connect/disconnect notices) — radio UI doesn't show them
+        if (msg.isSystem) return;
+        // Skip messages we sent ourselves (optimistically added; server echoes to all)
+        if (sentMsgIds.current.has(msg.id)) {
+          sentMsgIds.current.delete(msg.id);
+          return;
+        }
+        const incoming: RadioMessage = {
+          id: msg.id || `r-${Date.now()}`,
+          sender: msg.sender || 'UNIT',
+          senderId: 'remote',
+          type: 'TEXT',
+          content: msg.text || '',
+          timestamp: new Date(),
+          channel: msg.channel || chanToSocket(activeChannelRef.current.id),
+        };
+        setMessages(prev => [...prev, incoming]);
+      });
+
+      socket.on('voice_transmit', (data: { sender: string; audio: string }) => {
+        playVoiceBroadcast(data.audio, data.sender, chanToSocket(activeChannelRef.current.id));
+      });
+
+      socket.on('disconnect', () => { setConnected(false); setConnecting(false); });
+      socket.on('connect_error', () => { setConnected(false); setConnecting(false); });
+    };
+
+    void connectSocket();
+
+    return () => {
+      isMounted = false;
+      if (latTimer) clearInterval(latTimer);
+      if (socket) socket.disconnect();
+    };
   }, []);
 
   // Update channel on socket when active channel changes
@@ -193,21 +244,120 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
     }
   }, [activeChannel]);
 
-  // ── Audio ─────────────────────────────────────────────────────────────────
+  // Load Firestore history
+  useEffect(() => {
+    if (!connected) return;
+    const loadHistory = async () => {
+      try {
+        const q = query(collection(db, 'messages'), orderBy('createdAt', 'asc'), limit(100));
+        const snap = await getDocs(q);
+        const hist: RadioMessage[] = snap.docs
+          .map((doc) => {
+            const d = doc.data();
+            return {
+              id: doc.id,
+              sender: d.sender || 'UNIT',
+              senderId: d.sender === callsign ? 'me' : 'remote',
+              type: 'TEXT' as const,
+              content: d.text || '',
+              timestamp: d.createdAt ? new Date(d.createdAt) : new Date(),
+              channel: d.channel || '',
+            };
+          })
+          .filter((m) => m.channel === chanToSocket(activeChannel.id));
+        setMessages(hist);
+      } catch (e) {
+        console.warn('[ERadio] Firestore load error:', e);
+      }
+    };
+    loadHistory();
+  }, [activeChannel, connected, callsign]);
+
   const startRecording = async () => {
+    isPressingRef.current = true;
     if (isPTTActive) return;
-    if (Platform.OS !== 'web') { setIsPTTActive(true); return; }
-    if (!navigator.mediaDevices?.getUserMedia) { setIsPTTActive(true); return; }
+
+    if (Platform.OS !== 'web') {
+      // Native (Android/iOS): use modern expo-audio permissions check/request
+      try {
+        const { status } = await getRecordingPermissionsAsync();
+        if (status !== 'granted') {
+          const { status: newStatus } = await requestRecordingPermissionsAsync();
+          if (newStatus !== 'granted') {
+            setIsPTTActive(false);
+            Alert.alert(
+              'Microphone Permission Required',
+              'E-Radio PTT needs microphone access. Please allow it in Settings > Apps > Police Coms > Permissions.',
+              [{ text: 'OK' }]
+            );
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('[PTT] expo-audio permission check failed:', err);
+      }
+
+      // Native recording using expo-audio hook
+      try {
+        console.log('[PTT] Native startRecording triggered');
+        // Stop any active playbacks first
+        if (playingMsgId && audioElementsRef.current[playingMsgId]) {
+          try {
+            audioElementsRef.current[playingMsgId].pause();
+          } catch { /* noop */ }
+          setPlayingMsgId(null);
+        }
+
+        // Force allow recording audio mode
+        await setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
+        });
+
+        // Prepare and start recording using the hook
+        console.log('[PTT] Preparing recorder...');
+        await recorder.prepareToRecordAsync();
+        console.log('[PTT] Starting recording...');
+        await recorder.record();
+        startTimeRef.current = Date.now();
+        setIsPTTActive(true);
+        setSignalBars(5);
+        console.log('[PTT] Recording started successfully');
+
+        // If released while starting, cancel immediately
+        if (!isPressingRef.current) {
+          console.log('[PTT] User released button during prep/start, stopping immediately');
+          await recorder.stop();
+          setIsPTTActive(false);
+          setSignalBars(4);
+        }
+      } catch (err) {
+        console.warn('[PTT] Native recording start failed:', err);
+        setIsPTTActive(false);
+        setSignalBars(4);
+      }
+      return;
+    }
 
     try {
       audioChunksRef.current = [];
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
       const mr = new (window as any).MediaRecorder(stream);
       mediaRecorderRef.current = mr;
 
       mr.ondataavailable = (e: any) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
 
       mr.onstop = async () => {
+        const duration = (Date.now() - startTimeRef.current) / 1000;
+        stream.getTracks().forEach(t => t.stop());
+
+        // Discard very short recordings (e.g. quick clicks or permission popups)
+        if (duration < 0.5) {
+          console.log('[PTT] Discarded short recording:', duration);
+          return;
+        }
+
         const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         const audioDataUrl = URL.createObjectURL(blob);
         const reader = new FileReader();
@@ -216,7 +366,6 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
           const b64 = (reader.result as string).split(',')[1];
           socketRef.current?.emit('voice_transmit', { audio: b64, sender: callsign });
         };
-        stream.getTracks().forEach(t => t.stop());
 
         const msgId = Date.now().toString();
         // Store the audio element for playback
@@ -233,117 +382,303 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
           type: 'AUDIO',
           content: 'ptt_audio',
           timestamp: new Date(),
-          duration: 0, // will be updated after audio loads
+          duration: duration,
           audioUrl: audioDataUrl,
+          channel: chanToSocket(activeChannelRef.current.id),
         };
         setMessages(prev => [...prev, newMsg]);
       };
 
       mr.start();
+      startTimeRef.current = Date.now();
       setIsPTTActive(true);
       setSignalBars(5);
-    } catch { setIsPTTActive(true); }
+
+      // If user released the button while we were waiting for permission/stream, stop immediately
+      if (!isPressingRef.current) {
+        mr.stop();
+      }
+    } catch (err) {
+      console.error('[PTT] startRecording error:', err);
+      setIsPTTActive(false);
+      setSignalBars(4);
+      if (Platform.OS === 'web') {
+        if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+          alert('Microphone access blocked. Modern browsers require HTTPS (a Secure Context) to access the microphone over the local network.\n\nPlease start your Metro server with "npx expo start --https" and access the app via https:// to test microphone features on your phone/devices.');
+        } else {
+          alert('Microphone access denied. Please check your browser or system permissions.');
+        }
+      }
+    }
   };
 
-  const stopRecording = () => {
-    if (!isPTTActive) return;
-    if (mediaRecorderRef.current?.state !== 'inactive') {
-      mediaRecorderRef.current?.stop();
+  const stopRecording = async () => {
+    isPressingRef.current = false;
+    console.log('[PTT] Native stopRecording triggered, isPTTActive:', isPTTActive);
+
+    if (Platform.OS !== 'web') {
+      try {
+        console.log('[PTT] Stopping recorder...');
+        await recorder.stop();
+        const duration = (Date.now() - startTimeRef.current) / 1000;
+        const uri = recorder.uri;
+        console.log('[PTT] Recorder stopped. URI:', uri, 'Duration:', duration);
+
+        // Revert audio mode to normal playback
+        await setAudioModeAsync({
+          allowsRecording: false,
+          playsInSilentMode: true,
+        });
+
+        if (duration < 0.5 || !uri) {
+          console.log('[PTT] Discarded short native recording:', duration);
+          setIsPTTActive(false);
+          setSignalBars(4);
+          return;
+        }
+
+        // Convert native file to base64 string
+        console.log('[PTT] Reading file from disk as base64...');
+        const fileObj = new File(uri);
+        const base64Audio = await fileObj.base64();
+        console.log('[PTT] File read successfully. Base64 length:', base64Audio.length);
+
+        // Transmit Base64 audio over Socket
+        console.log('[PTT] Emitting voice_transmit over socket to channel:', activeChannelRef.current.id);
+        socketRef.current?.emit('voice_transmit', { audio: base64Audio, sender: callsign });
+
+        const msgId = Date.now().toString();
+
+        // Create local AudioPlayer for playback
+        const player = createAudioPlayer(uri);
+        player.addListener('playbackStatusUpdate', (status: any) => {
+          if (status.didJustFinish) {
+            setPlayingMsgId(null);
+          }
+        });
+        audioElementsRef.current[msgId] = player;
+
+        const newMsg: RadioMessage = {
+          id: msgId,
+          sender: callsign || 'ME',
+          senderId: 'me',
+          type: 'AUDIO',
+          content: 'ptt_audio',
+          timestamp: new Date(),
+          duration: duration,
+          audioUrl: uri,
+          channel: chanToSocket(activeChannelRef.current.id),
+        };
+        setMessages(prev => [...prev, newMsg]);
+      } catch (err) {
+        console.warn('[PTT] Native stopRecording error:', err);
+      }
+      setIsPTTActive(false);
+      setSignalBars(4);
+      return;
+    }
+
+    // Stop recorder if it's active, regardless of isPTTActive state.
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (err) {
+        console.warn('[PTT] Error stopping MediaRecorder:', err);
+      }
+      mediaRecorderRef.current = null;
     }
     setIsPTTActive(false);
     setSignalBars(4);
   };
 
-  const playVoiceBroadcast = (base64Audio: string, sender: string) => {
-    if (Platform.OS !== 'web') return;
-    try {
-      const dataUrl = `data:audio/webm;base64,${base64Audio}`;
-      const msgId = Date.now().toString();
+  const getMimeTypeFromBase64 = (b64: string): string => {
+    if (!b64) return 'audio/webm';
+    const prefix = b64.substring(0, 16);
+    if (prefix.includes('GkX') || prefix.includes('webm')) {
+      return 'audio/webm';
+    }
+    if (prefix.includes('AAA') || prefix.includes('ftyp') || prefix.includes('mp4')) {
+      return 'audio/mp4';
+    }
+    if (prefix.startsWith('UklGR')) {
+      return 'audio/wav';
+    }
+    return 'audio/webm'; // fallback
+  };
 
-      // Build Audio element and store it
-      const audioEl = new (window as any).Audio(dataUrl);
-      audioEl.onended = () => setPlayingMsgId(null);
-      audioElementsRef.current[msgId] = audioEl;
+  const playVoiceBroadcast = async (base64Audio: string, sender: string, channelName: string) => {
+    const mimeType = getMimeTypeFromBase64(base64Audio);
+    const dataUrl = `data:${mimeType};base64,${base64Audio}`;
+    const msgId = Date.now().toString();
 
-      // Auto-play incoming voice broadcast
-      audioEl.play().catch(console.warn);
-      setPlayingMsgId(msgId);
+    if (Platform.OS === 'web') {
+      try {
+        // Build Audio element and store it
+        const audioEl = new (window as any).Audio(dataUrl);
+        audioEl.onended = () => setPlayingMsgId(null);
+        audioEl.onloadedmetadata = () => {
+          setMessages(prev => prev.map(m => m.id === msgId ? { ...m, duration: audioEl.duration } : m));
+        };
+        audioElementsRef.current[msgId] = audioEl;
 
-      const incomingMsg: RadioMessage = {
-        id: msgId,
-        sender: sender || 'UNIT',
-        senderId: 'remote',
-        type: 'AUDIO',
-        content: 'ptt_incoming',
-        timestamp: new Date(),
-        duration: 0,
-        audioUrl: dataUrl,
-      };
-      setMessages(prev => [...prev, incomingMsg]);
-    } catch { /* noop */ }
+        // Auto-play incoming voice broadcast
+        audioEl.play().catch(console.warn);
+        setPlayingMsgId(msgId);
+      } catch { /* noop */ }
+    } else {
+      // Native Android/iOS: write base64 to temp file, then play via expo-audio
+      try {
+        const fileObj = new File(Paths.cache, `incoming_voice_${msgId}.bin`);
+        fileObj.write(base64Audio, { encoding: EncodingType.Base64 });
+
+        const player = createAudioPlayer(fileObj.uri);
+        player.addListener('playbackStatusUpdate', (status: any) => {
+          if (status.didJustFinish) {
+            setPlayingMsgId(null);
+            player.release();
+            if (fileObj.exists) {
+              fileObj.delete();
+            }
+          }
+        });
+        audioElementsRef.current[msgId] = player;
+        player.play();
+        setPlayingMsgId(msgId);
+      } catch (err) {
+        console.warn('[PTT] Native playVoiceBroadcast error:', err);
+      }
+    }
+
+    const incomingMsg: RadioMessage = {
+      id: msgId,
+      sender: sender || 'UNIT',
+      senderId: 'remote',
+      type: 'AUDIO',
+      content: 'ptt_incoming',
+      timestamp: new Date(),
+      duration: 0,
+      audioUrl: dataUrl,
+      channel: channelName,
+    };
+    setMessages(prev => [...prev, incomingMsg]);
   };
 
   // ── Audio playback toggle ─────────────────────────────────────────────────
-  const toggleAudioPlayback = (msg: RadioMessage) => {
-    if (Platform.OS !== 'web') return;
-    const audioEl = audioElementsRef.current[msg.id];
-    if (!audioEl) return;
+  const toggleAudioPlayback = async (msg: RadioMessage) => {
+    if (Platform.OS === 'web') {
+      const audioEl = audioElementsRef.current[msg.id];
+      if (!audioEl) return;
 
-    if (playingMsgId === msg.id) {
-      // Currently playing → pause
-      audioEl.pause();
-      setPlayingMsgId(null);
-    } else {
-      // Stop any currently playing audio
-      if (playingMsgId && audioElementsRef.current[playingMsgId]) {
-        audioElementsRef.current[playingMsgId].pause();
-        audioElementsRef.current[playingMsgId].currentTime = 0;
+      if (playingMsgId === msg.id) {
+        // Currently playing → pause
+        audioEl.pause();
+        setPlayingMsgId(null);
+      } else {
+        // Stop any currently playing audio
+        if (playingMsgId && audioElementsRef.current[playingMsgId]) {
+          audioElementsRef.current[playingMsgId].pause();
+          audioElementsRef.current[playingMsgId].currentTime = 0;
+        }
+        audioEl.currentTime = 0;
+        audioEl.play().catch(console.warn);
+        setPlayingMsgId(msg.id);
       }
-      audioEl.currentTime = 0;
-      audioEl.play().catch(console.warn);
-      setPlayingMsgId(msg.id);
+    } else {
+      // Native Android/iOS: use expo-audio's createAudioPlayer
+      try {
+        if (playingMsgId === msg.id) {
+          // Pause/stop
+          const player = audioElementsRef.current[msg.id];
+          if (player) {
+            player.pause();
+          }
+          setPlayingMsgId(null);
+        } else {
+          // Stop any other active player first
+          if (playingMsgId && audioElementsRef.current[playingMsgId]) {
+            try {
+              audioElementsRef.current[playingMsgId].pause();
+            } catch { /* noop */ }
+          }
+
+          let player = audioElementsRef.current[msg.id];
+          if (!player) {
+            let audioSource = msg.audioUrl || '';
+            if (audioSource.startsWith('data:')) {
+              const base64Data = audioSource.split(',')[1];
+              const fileObj = new File(Paths.cache, `playback_${msg.id}.bin`);
+              fileObj.write(base64Data, { encoding: EncodingType.Base64 });
+              audioSource = fileObj.uri;
+            }
+
+            player = createAudioPlayer(audioSource);
+            player.addListener('playbackStatusUpdate', (status: any) => {
+              if (status.didJustFinish) {
+                setPlayingMsgId(null);
+              }
+            });
+            audioElementsRef.current[msg.id] = player;
+          }
+
+          player.play();
+          setPlayingMsgId(msg.id);
+        }
+      } catch (err) {
+        console.warn('[PTT] Native toggleAudioPlayback error:', err);
+      }
     }
   };
 
   // ── Send text ─────────────────────────────────────────────────────────────
-  const handleSendText = () => {
-    if (!inputText.trim()) return;
-    const msgId = Date.now().toString();
+  const handleSendText = async () => {
+    if (!inputText.trim() || !connected) return;
+    const msgId = `r-${Date.now()}`;
     const msgTimestamp = new Date().toTimeString().split(' ')[0];
     const socketChannel = chanToSocket(activeChannel.id);
+    const textToSend = inputText.trim();
 
-    // Optimistically add to local state
+    const msgData = {
+      sender: callsign,
+      text: textToSend,
+      channel: socketChannel,
+      timestamp: msgTimestamp,
+      isSystem: false,
+      createdAt: Date.now(),
+    };
+
+    // Optimistically add to local state immediately so user sees their own message
     const msg: RadioMessage = {
       id: msgId,
       sender: callsign || 'ME',
       senderId: 'me',
       type: 'TEXT',
-      content: inputText.trim(),
-      timestamp: new Date(),
+      content: textToSend,
+      timestamp: new Date(msgData.createdAt),
+      channel: socketChannel,
     };
     setMessages(prev => [...prev, msg]);
-
-    // Emit over socket so other users receive it
-    if (connected && socketRef.current) {
-      // Register ID first so the server echo-back is ignored by the listener
-      sentMsgIds.current.add(msgId);
-      socketRef.current.emit('send_message', {
-        id: msgId,
-        sender: callsign || 'ME',
-        text: inputText.trim(),
-        channel: socketChannel,
-        timestamp: msgTimestamp,
-        isSystem: false,
-      });
-    }
-
     setInputText('');
+
+    try {
+      const docRef = await addDoc(collection(db, 'messages'), msgData);
+      sentMsgIds.current.add(docRef.id);
+      socketRef.current?.emit('send_message', { id: docRef.id, ...msgData });
+    } catch (err) {
+      console.warn('[ERadio] Firestore save error:', err);
+      sentMsgIds.current.add(msgId);
+      socketRef.current?.emit('send_message', { id: msgId, ...msgData });
+    }
   };
 
   // ── Filtered lists ────────────────────────────────────────────────────────
   const filteredChannels = channels.filter(c =>
     c.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  // Auto-scroll to bottom on new messages (mirror EMessenger)
+  useEffect(() => {
+    setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 80);
+  }, [messages]);
 
   // ─────────────────────────────────────────────────────────────────────────
   //  SIDEBAR – Channel List
@@ -477,9 +812,9 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
             contentContainerStyle={styles.messageContent}
             onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
           >
-            {messages.map(msg => (
+            {messages.filter(msg => msg.channel === chanToSocket(activeChannel.id)).map((msg, index) => (
               <View
-                key={msg.id}
+                key={`${msg.id}-${index}`}
                 style={[styles.msgWrapper, msg.senderId === 'me' ? styles.msgRight : styles.msgLeft]}
               >
                 {/* Sender + time header */}
@@ -949,9 +1284,7 @@ const styles = StyleSheet.create({
   audioPlayBtnActive: {
     backgroundColor: C.blue600,
     borderColor: C.blue500,
-    shadowColor: C.blue500,
-    shadowOpacity: 0.6,
-    shadowRadius: 6,
+    boxShadow: `0px 0px 6px ${C.blue500}`,
     elevation: 4,
   },
   waveformRow: {
@@ -1012,9 +1345,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     margin: 2,
-    shadowColor: C.blue600,
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
+    boxShadow: `0px 0px 6px ${C.blue600}`,
     elevation: 3,
   },
 
@@ -1066,10 +1397,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderBottomWidth: 8,
     borderBottomColor: C.bg950,
-    shadowColor: '#000',
-    shadowOpacity: 0.5,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
+    boxShadow: '0px 4px 8px rgba(0,0,0,0.5)',
     elevation: 6,
     // prevent text selection on long press
     // @ts-ignore
@@ -1079,9 +1407,7 @@ const styles = StyleSheet.create({
     backgroundColor: C.green600,
     borderColor: C.green500,
     borderBottomColor: C.green600,
-    shadowColor: C.green500,
-    shadowOpacity: 0.9,
-    shadowRadius: 20,
+    boxShadow: `0px 0px 20px ${C.green500}`,
     elevation: 12,
   },
   pttPingDot: {

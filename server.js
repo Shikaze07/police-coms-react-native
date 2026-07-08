@@ -62,21 +62,24 @@ io.on('connection', (socket) => {
   // Handle register/update callsign
   socket.on('register', (data) => {
     clientCallsign = data.callsign.toUpperCase();
-    activeUsers.set(socket.id, { callsign: clientCallsign, channel: clientChannel });
-    console.log(`[SERVER] Socket ${socket.id} registered callsign: ${clientCallsign}`);
+    const clientType = data.clientType || 'chat';
+    activeUsers.set(socket.id, { callsign: clientCallsign, channel: clientChannel, clientType });
+    console.log(`[SERVER] Socket ${socket.id} registered callsign: ${clientCallsign} (${clientType})`);
 
     // Broadcast updated user list
     broadcastUserList();
 
     // Broadcast system message
-    io.to(clientChannel).emit('message', {
-      id: `sys-${Date.now()}`,
-      sender: 'SYSTEM',
-      text: `${clientCallsign} has connected to ${clientChannel}.`,
-      channel: clientChannel,
-      timestamp: getTimestamp(),
-      isSystem: true,
-    });
+    if (clientType !== 'radio') {
+      io.to(clientChannel).emit('message', {
+        id: `sys-${Date.now()}`,
+        sender: 'SYSTEM',
+        text: `${clientCallsign} has connected to ${clientChannel}.`,
+        channel: clientChannel,
+        timestamp: getTimestamp(),
+        isSystem: true,
+      });
+    }
   });
 
   // ── Camera feed events ───────────────────────────────────────────────────
@@ -152,31 +155,36 @@ io.on('connection', (socket) => {
     socket.join(channel);
     clientChannel = channel;
 
+    const userData = activeUsers.get(socket.id);
+    const userType = userData?.clientType || 'chat';
+
     if (activeUsers.has(socket.id)) {
       activeUsers.get(socket.id).channel = channel;
     }
 
     console.log(`[SERVER] Client ${clientCallsign} changed channel to ${channel}`);
 
-    // Broadcast system message to old channel
-    io.to(oldChannel).emit('message', {
-      id: `sys-${Date.now()}`,
-      sender: 'SYSTEM',
-      text: `${clientCallsign} has left the channel.`,
-      channel: oldChannel,
-      timestamp: getTimestamp(),
-      isSystem: true,
-    });
+    if (userType !== 'radio') {
+      // Broadcast system message to old channel
+      io.to(oldChannel).emit('message', {
+        id: `sys-${Date.now()}`,
+        sender: 'SYSTEM',
+        text: `${clientCallsign} has left the channel.`,
+        channel: oldChannel,
+        timestamp: getTimestamp(),
+        isSystem: true,
+      });
 
-    // Broadcast system message to new channel
-    io.to(channel).emit('message', {
-      id: `sys-${Date.now()}`,
-      sender: 'SYSTEM',
-      text: `${clientCallsign} joined ${channel}.`,
-      channel: channel,
-      timestamp: getTimestamp(),
-      isSystem: true,
-    });
+      // Broadcast system message to new channel
+      io.to(channel).emit('message', {
+        id: `sys-${Date.now()}`,
+        sender: 'SYSTEM',
+        text: `${clientCallsign} joined ${channel}.`,
+        channel: channel,
+        timestamp: getTimestamp(),
+        isSystem: true,
+      });
+    }
 
     broadcastUserList();
   });
@@ -212,6 +220,8 @@ io.on('connection', (socket) => {
   // Handle disconnect
   socket.on('disconnect', () => {
     console.log(`[SERVER] Client disconnected: ${clientCallsign} (${socket.id})`);
+    const userData = activeUsers.get(socket.id);
+    const userType = userData?.clientType || 'chat';
     activeUsers.delete(socket.id);
 
     // Remove camera feed if registered
@@ -221,14 +231,16 @@ io.on('connection', (socket) => {
       broadcastCameraFeeds();
     }
 
-    io.to(clientChannel).emit('message', {
-      id: `sys-${Date.now()}`,
-      sender: 'SYSTEM',
-      text: `${clientCallsign} disconnected.`,
-      channel: clientChannel,
-      timestamp: getTimestamp(),
-      isSystem: true,
-    });
+    if (userType !== 'radio') {
+      io.to(clientChannel).emit('message', {
+        id: `sys-${Date.now()}`,
+        sender: 'SYSTEM',
+        text: `${clientCallsign} disconnected.`,
+        channel: clientChannel,
+        timestamp: getTimestamp(),
+        isSystem: true,
+      });
+    }
 
     broadcastUserList();
   });

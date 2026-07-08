@@ -1,8 +1,9 @@
 import { Feather } from '@expo/vector-icons';
 import { usePathname, useRouter } from 'expo-router';
 import { DrawerContentComponentProps, DrawerContentScrollView } from 'expo-router/drawer';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { clearStoredSocketUrl, getStoredSocketUrl, setStoredSocketUrl } from './lib/network';
 import { MODULE_CATEGORIES, ModuleItem } from '../constants/modules';
 import { Colors, Fonts, Spacing } from '../constants/theme';
 
@@ -13,6 +14,10 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
     'police-ops': true, // Keep first one open by default
   });
+
+  const [socketUrlInput, setSocketUrlInput] = useState('');
+  const [socketUrlStatus, setSocketUrlStatus] = useState('Auto-detecting computer IP');
+  const [showSettings, setShowSettings] = useState(false);
 
   // Toggle category expansion
   const toggleCategory = (categoryId: string) => {
@@ -60,12 +65,43 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
     props.navigation.closeDrawer();
   };
 
+  useEffect(() => {
+    void (async () => {
+      const stored = await getStoredSocketUrl();
+      if (stored) {
+        setSocketUrlInput(stored);
+        setSocketUrlStatus('Using saved socket URL');
+      } else {
+        setSocketUrlStatus('Auto-detecting computer IP');
+      }
+    })();
+  }, []);
+
   const triggerEmergency = () => {
     Alert.alert(
       '⚠️ EMERGENCY BROADCAST',
       'Encrypted distress beacon initiated. Location coordinates sent to HQ Dispatch. Local reinforcement request broadcasting...',
       [{ text: 'STAND DOWN', style: 'cancel' }, { text: 'CONFIRM ALERT', style: 'destructive' }]
     );
+  };
+
+  const handleSaveSocketUrl = async () => {
+    const saved = await setStoredSocketUrl(socketUrlInput);
+    if (saved) {
+      setSocketUrlInput(saved);
+      setSocketUrlStatus('Using saved socket URL');
+      Alert.alert('Saved', `Socket URL saved as ${saved}`);
+    } else {
+      setSocketUrlStatus('Auto-detecting computer IP');
+      Alert.alert('Cleared', 'Socket URL cleared. The app will auto-detect the host again.');
+    }
+  };
+
+  const handleClearSocketUrl = async () => {
+    await clearStoredSocketUrl();
+    setSocketUrlInput('');
+    setSocketUrlStatus('Auto-detecting computer IP');
+    Alert.alert('Cleared', 'Saved socket URL removed.');
   };
 
   return (
@@ -106,6 +142,8 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
           </Pressable>
         ) : null}
       </View>
+
+
 
       {/* Main Drawer Navigation Items */}
       <DrawerContentScrollView
@@ -190,8 +228,36 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
         })}
       </DrawerContentScrollView>
 
-      {/* Emergency Distress Beacon Button */}
+      {/* Footer */}
       <View style={styles.footer}>
+        {/* Settings Panel — shown when toggled */}
+        {showSettings && (
+          <View style={styles.socketCard}>
+            <View style={styles.socketHeaderRow}>
+              <Text style={styles.socketTitle}>COMPUTER SOCKET URL</Text>
+              <Text style={styles.socketStatus}>{socketUrlStatus}</Text>
+            </View>
+            <TextInput
+              placeholder="http://192.168.1.50:3000"
+              placeholderTextColor={Colors.dark.textSecondary}
+              style={styles.socketInput}
+              value={socketUrlInput}
+              onChangeText={setSocketUrlInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+            />
+            <View style={styles.socketActions}>
+              <Pressable style={styles.socketPrimaryBtn} onPress={() => void handleSaveSocketUrl()}>
+                <Text style={styles.socketPrimaryBtnText}>SAVE</Text>
+              </Pressable>
+              <Pressable style={styles.socketSecondaryBtn} onPress={() => void handleClearSocketUrl()}>
+                <Text style={styles.socketSecondaryBtnText}>CLEAR</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
+
         <View style={styles.networkStatus}>
           <View style={styles.greenPulse} />
           <Text style={styles.networkText}>SECURE TAC-NET ONLINE</Text>
@@ -200,6 +266,26 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
         <Pressable style={styles.emergencyButton} onPress={triggerEmergency}>
           <Feather name="alert-octagon" size={18} color="#ffffff" style={styles.emergencyIcon} />
           <Text style={styles.emergencyButtonText}>EMERGENCY BROADCAST</Text>
+        </Pressable>
+
+        {/* Settings button — very bottom */}
+        <Pressable
+          style={styles.settingsButton}
+          onPress={() => setShowSettings((v) => !v)}
+        >
+          <Feather
+            name="settings"
+            size={14}
+            color={showSettings ? Colors.dark.primary : Colors.dark.textSecondary}
+          />
+          <Text style={[styles.settingsButtonText, showSettings && styles.settingsButtonTextActive]}>
+            {showSettings ? 'HIDE SETTINGS' : 'SETTINGS'}
+          </Text>
+          <Feather
+            name={showSettings ? 'chevron-up' : 'chevron-down'}
+            size={12}
+            color={showSettings ? Colors.dark.primary : Colors.dark.textSecondary}
+          />
         </Pressable>
       </View>
     </View>
@@ -342,10 +428,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.dark.primary,
     borderTopRightRadius: 2,
     borderBottomRightRadius: 2,
-    shadowColor: Colors.dark.primary,
-    shadowOffset: { width: 1, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 3,
+    boxShadow: `1px 0px 3px ${Colors.dark.primary}`,
   },
   divider: {
     height: 1,
@@ -438,10 +521,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.dark.danger,
     paddingVertical: Spacing.two,
     borderRadius: 6,
-    shadowColor: Colors.dark.danger,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
+    boxShadow: `0px 2px 4px ${Colors.dark.danger}`,
   },
   emergencyIcon: {
     marginRight: Spacing.one,
@@ -449,6 +529,99 @@ const styles = StyleSheet.create({
   emergencyButtonText: {
     color: '#ffffff',
     fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  settingsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: Spacing.two,
+    paddingVertical: 8,
+    paddingHorizontal: Spacing.two,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: Colors.dark.border,
+    backgroundColor: Colors.dark.backgroundElement,
+    gap: 6,
+  },
+  settingsButtonText: {
+    color: Colors.dark.textSecondary,
+    fontSize: 10,
+    fontWeight: 'bold',
+    letterSpacing: 0.8,
+    flex: 1,
+    textAlign: 'center',
+  },
+  settingsButtonTextActive: {
+    color: Colors.dark.primary,
+  },
+  socketCard: {
+    backgroundColor: Colors.dark.backgroundElement,
+    borderRadius: 8,
+    padding: Spacing.two,
+    marginBottom: Spacing.two,
+    borderWidth: 1,
+    borderColor: Colors.dark.border,
+  },
+  socketHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  socketTitle: {
+    color: Colors.dark.text,
+    fontSize: 10,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  socketStatus: {
+    color: Colors.dark.textSecondary,
+    fontSize: 9,
+    fontFamily: Fonts?.mono,
+  },
+  socketInput: {
+    backgroundColor: Colors.dark.background,
+    color: Colors.dark.text,
+    fontSize: 11,
+    fontFamily: Fonts?.mono,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: Colors.dark.border,
+    marginBottom: 8,
+  },
+  socketActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  socketPrimaryBtn: {
+    flex: 1,
+    backgroundColor: Colors.dark.primary,
+    paddingVertical: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  socketPrimaryBtnText: {
+    color: '#000',
+    fontSize: 10,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  socketSecondaryBtn: {
+    flex: 1,
+    backgroundColor: Colors.dark.backgroundSelected,
+    paddingVertical: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.dark.border,
+  },
+  socketSecondaryBtnText: {
+    color: Colors.dark.textSecondary,
+    fontSize: 10,
     fontWeight: 'bold',
     letterSpacing: 0.5,
   },

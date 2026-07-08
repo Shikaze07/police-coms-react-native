@@ -119,9 +119,7 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 3,
     top: '30%',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 4,
+    boxShadow: '0px 0px 4px rgba(255,255,255,0.9)',
   },
   fingerprintIcon: {
     marginBottom: Spacing.three,
