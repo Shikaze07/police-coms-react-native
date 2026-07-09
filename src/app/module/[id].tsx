@@ -1,7 +1,8 @@
 import { Feather } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React from 'react';
+import React, { Suspense } from 'react';
 import {
+  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -67,7 +68,18 @@ export default function ModuleScreen() {
       {/* Render Specific Interactive Content */}
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {SelectedModuleComponent ? (
-          <SelectedModuleComponent theme={theme} isDark={isDark} />
+          <Suspense
+            fallback={
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color={theme.primary} />
+                <Text style={[styles.loadingText, { color: theme.textSecondary }]}>
+                  LOADING MODULE...
+                </Text>
+              </View>
+            }
+          >
+            <SelectedModuleComponent theme={theme} isDark={isDark} />
+          </Suspense>
         ) : (
           <View style={styles.errorContainer}>
             <Text style={{ color: theme.textSecondary }}>NO INTERFACE CORRESPONDENCE FOUND</Text>
@@ -146,5 +158,17 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: Spacing.three,
     paddingTop: Spacing.two,
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.six,
+  },
+  loadingText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+    marginTop: Spacing.two,
   },
 });
