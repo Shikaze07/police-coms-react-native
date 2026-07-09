@@ -41,6 +41,12 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Police Coms to access the camera for body-cam broadcasting."
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "backgroundColor": "#208AEF",

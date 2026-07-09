@@ -17,6 +17,7 @@ import { io } from 'socket.io-client';
 import { Fonts, Spacing } from '../../../constants/theme';
 import { getSocketUrl } from '../../lib/network';
 import { db } from '../../lib/firebase';
+import { collection, addDoc, query, orderBy, limit, getDocs } from '@react-native-firebase/firestore';
 
 // ─── Color constants (mirrors web slate palette) ────────────────────────────
 const C = {
@@ -248,7 +249,8 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
     if (!connected) return;
     const loadHistory = async () => {
       try {
-        const snap = await db.collection('messages').orderBy('createdAt', 'asc').limit(100).get();
+        const q = query(collection(db, 'messages'), orderBy('createdAt', 'asc'), limit(100));
+        const snap = await getDocs(q);
         const hist: RadioMessage[] = snap.docs
           .map((doc) => {
             const d = doc.data();
@@ -658,7 +660,7 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
     setInputText('');
 
     try {
-      const docRef = await db.collection('messages').add(msgData);
+      const docRef = await addDoc(collection(db, 'messages'), msgData);
       sentMsgIds.current.add(docRef.id);
       socketRef.current?.emit('send_message', { id: docRef.id, ...msgData });
     } catch (err) {
@@ -1291,6 +1293,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 2,
     opacity: 0.5,
+    overflow: 'hidden',
   },
   waveBar: {
     width: 3,

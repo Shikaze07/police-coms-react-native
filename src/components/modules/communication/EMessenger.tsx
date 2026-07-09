@@ -16,6 +16,7 @@ import { Feather } from '@expo/vector-icons';
 import { Spacing, Fonts } from '../../../constants/theme';
 import { io } from 'socket.io-client';
 import { db } from '../../lib/firebase';
+import { collection, addDoc, query, orderBy, limit, getDocs } from '@react-native-firebase/firestore';
 import { getSocketUrl } from '../../lib/network';
 
 // --- Constants ---
@@ -190,7 +191,8 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
     if (!connected) return;
     const loadHistory = async () => {
       try {
-        const snap = await db.collection('messages').orderBy('createdAt', 'asc').limit(100).get();
+        const q = query(collection(db, 'messages'), orderBy('createdAt', 'asc'), limit(100));
+        const snap = await getDocs(q);
         const hist = snap.docs
           .map((doc) => {
             const d = doc.data();
@@ -249,7 +251,7 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
     };
 
     try {
-      const docRef = await db.collection('messages').add(msgData);
+      const docRef = await addDoc(collection(db, 'messages'), msgData);
       socketRef.current?.emit('send_message', { id: docRef.id, ...msgData });
     } catch {
       socketRef.current?.emit('send_message', { text: finalTxt.trim() });

@@ -12,6 +12,8 @@ import {
   Image,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
+import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { Spacing } from '../../../constants/theme';
 import { io } from 'socket.io-client';
 import Constants from 'expo-constants';
@@ -88,8 +90,11 @@ function SignalBars({ bars, color }: { bars: number; color: string }) {
 // ══════════════════════════════════════════════════════════════════════════════
 export default function BodyCamera({ theme, isDark }: { theme: any; isDark: boolean }) {
   const socketRef   = useRef<any>(null);
-  const videoRef    = useRef<any>(null);
-  const streamRef   = useRef<any>(null); // MediaStream
+  const videoRef    = useRef<any>(null); // For Web <video>
+  const streamRef   = useRef<any>(null); // MediaStream (Web)
+  const nativeCameraRef = useRef<CameraView>(null); // For Native CameraView
+  const [camPermission, requestCamPermission] = useCameraPermissions();
+  const [micPermission, requestMicPermission] = useMicrophonePermissions();
 
   // ── Role selection ──────────────────────────────────────────────────────────
   const [role,         setRole]         = useState<Role>('officer');
@@ -216,6 +221,36 @@ export default function BodyCamera({ theme, isDark }: { theme: any; isDark: bool
     return () => clearInterval(interval);
   }, [streaming, hasVideo, connected, role]);
 
+  // ── Send real-time video frames to server (Native only) ───────────────────
+  useEffect(() => {
+    if (role !== 'officer' || !streaming || !hasVideo || !connected || Platform.OS === 'web') return;
+
+    const interval = setInterval(async () => {
+      if (nativeCameraRef.current) {
+        try {
+          const photo = await nativeCameraRef.current.takePictureAsync({ skipProcessing: true, shutterSound: false });
+          if (photo?.uri) {
+            // Downscale image to 240 width (maintaining aspect ratio) to drastically reduce payload size and prevent socket stall
+            const manipResult = await manipulateAsync(
+              photo.uri,
+              [{ resize: { width: 240 } }],
+              { compress: 0.5, format: SaveFormat.JPEG, base64: true }
+            );
+            
+            if (manipResult.base64) {
+              const frameData = 'data:image/jpeg;base64,' + manipResult.base64;
+              socketRef.current?.emit('camera_frame', { frame: frameData });
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to capture native video frame', e);
+        }
+      }
+    }, 500); // 2 FPS for native to save bandwidth and battery
+
+    return () => clearInterval(interval);
+  }, [streaming, hasVideo, connected, role]);
+
 
   // ── Send camera_update when officer state changes ───────────────────────────
   useEffect(() => {
@@ -251,10 +286,24 @@ export default function BodyCamera({ theme, isDark }: { theme: any; isDark: bool
     }
 
     if (Platform.OS !== 'web') {
-      // Native: just register without actual media
+      // Native using expo-camera
+      if (!camPermission?.granted || !micPermission?.granted) {
+        const cReq = await requestCamPermission();
+        const mReq = await requestMicPermission();
+        if (!cReq.granted || !mReq.granted) {
+          const msg = 'Camera and microphone access is required before body-cam streaming can start.';
+          setPermError(msg);
+          addLog(`[ERROR] ${msg}`);
+          Alert.alert('Permissions required', msg);
+          return;
+        }
+      }
+
+      setHasVideo(true);
       doRegisterCamera();
       setStreaming(true);
-      addLog('Stream started (native mode).');
+      setRecSeconds(0);
+      addLog('Stream started (native CameraView mode).');
       return;
     }
 
@@ -419,6 +468,17 @@ export default function BodyCamera({ theme, isDark }: { theme: any; isDark: bool
                 width: '100%', height: '100%',
                 objectFit: 'cover', opacity: 0.85,
               }}
+            />
+          )}
+
+          {/* Real camera preview (native only) */}
+          {Platform.OS !== 'web' && hasVideo && (
+            <CameraView
+              ref={nativeCameraRef}
+              style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0.85 }}
+              facing="back"
+              mute={isMuted}
+              animateShutter={false}
             />
           )}
 
