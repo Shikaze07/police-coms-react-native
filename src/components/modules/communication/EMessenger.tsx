@@ -11,6 +11,7 @@ import {
   useWindowDimensions,
   Image,
   Alert,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Spacing, Fonts } from '../../../constants/theme';
@@ -652,7 +653,11 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
   //  ROOT RENDER
   // ─────────────────────────────────────────
   return (
-    <View style={styles.root}>
+    <KeyboardAvoidingView
+      style={styles.root}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+    >
       <View style={styles.inner}>
         {isLargeScreen ? (
           <>
@@ -666,7 +671,7 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
           </>
         )}
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -678,7 +683,6 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 600,
     borderRadius: 12,
-    overflow: 'hidden',
     borderWidth: 1,
     borderColor: C.border,
     backgroundColor: C.bg950,

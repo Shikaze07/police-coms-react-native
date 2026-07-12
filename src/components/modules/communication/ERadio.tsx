@@ -10,6 +10,7 @@ import {
   View,
   useWindowDimensions,
   Alert,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { requestRecordingPermissionsAsync, getRecordingPermissionsAsync, createAudioPlayer, useAudioRecorder, RecordingPresets, setAudioModeAsync } from 'expo-audio';
 import { Paths, File, EncodingType } from 'expo-file-system';
@@ -966,7 +967,11 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
   //  ROOT
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <View style={styles.root}>
+    <KeyboardAvoidingView
+      style={styles.root}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+    >
       <View style={styles.inner}>
         {isLargeScreen ? (
           <>
@@ -977,7 +982,7 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
           mobileView === 'sidebar' ? renderSidebar() : renderChatArea()
         )}
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -989,7 +994,6 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 600,
     borderRadius: 12,
-    overflow: 'hidden',
     borderWidth: 1,
     borderColor: C.border,
     backgroundColor: C.bg950,

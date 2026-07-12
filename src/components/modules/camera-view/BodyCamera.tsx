@@ -254,28 +254,36 @@ export default function BodyCamera({ theme, isDark }: { theme: any; isDark: bool
   useEffect(() => {
     if (role !== 'officer' || !streaming || !hasVideo || !connected || Platform.OS === 'web') return;
 
+    // Guard: skip frame if previous capture pipeline is still running
+    const isCapturingRef = { current: false };
+
     const interval = setInterval(async () => {
-      if (nativeCameraRef.current) {
-        try {
-          const photo = await nativeCameraRef.current.takePictureAsync({ skipProcessing: true, shutterSound: false });
-          if (photo?.uri) {
-            // Downscale image to 240 width (maintaining aspect ratio) to drastically reduce payload size and prevent socket stall
-            const manipResult = await manipulateAsync(
-              photo.uri,
-              [{ resize: { width: 240 } }],
-              { compress: 0.5, format: SaveFormat.JPEG, base64: true }
-            );
-            
-            if (manipResult.base64) {
-              const frameData = 'data:image/jpeg;base64,' + manipResult.base64;
-              socketRef.current?.emit('camera_frame', { frame: frameData });
-            }
+      if (isCapturingRef.current || !nativeCameraRef.current) return;
+      isCapturingRef.current = true;
+      try {
+        const photo = await nativeCameraRef.current.takePictureAsync({
+          skipProcessing: true,
+          shutterSound: false,
+          quality: 0.3, // lower quality = faster encode
+        });
+        if (photo?.uri) {
+          // Downscale to 200px wide — enough for admin monitoring, tiny payload
+          const manipResult = await manipulateAsync(
+            photo.uri,
+            [{ resize: { width: 200 } }],
+            { compress: 0.4, format: SaveFormat.JPEG, base64: true }
+          );
+          if (manipResult.base64) {
+            const frameData = 'data:image/jpeg;base64,' + manipResult.base64;
+            socketRef.current?.emit('camera_frame', { frame: frameData });
           }
-        } catch (e) {
-          console.warn('Failed to capture native video frame', e);
         }
+      } catch (e) {
+        console.warn('Failed to capture native video frame', e);
+      } finally {
+        isCapturingRef.current = false;
       }
-    }, 500); // 2 FPS for native to save bandwidth and battery
+    }, 1500); // ~0.7 FPS — pipeline takes ~800-1200ms, this prevents frame stacking
 
     return () => clearInterval(interval);
   }, [streaming, hasVideo, connected, role]);
