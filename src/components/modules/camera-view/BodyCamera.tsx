@@ -16,7 +16,7 @@ import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { Spacing } from '../../../constants/theme';
 import { io } from 'socket.io-client';
-import Constants from 'expo-constants';
+import { getSocketUrl } from '../../lib/network';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const C = {
@@ -41,17 +41,6 @@ const C = {
 };
 
 const ACCENT = ['#3b82f6','#10b981','#f59e0b','#ec4899','#8b5cf6','#06b6d4','#f97316','#84cc16'];
-
-const getSocketUrl = () => {
-  if (Platform.OS === 'web') {
-    if (typeof window !== 'undefined' && window.location) {
-      return `http://${window.location.hostname}:3000`;
-    }
-  }
-  const h = Constants.expoConfig?.hostUri;
-  if (h) return `http://${h.split(':')[0]}:3000`;
-  return 'http://localhost:3000';
-};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Role = 'officer' | 'admin';
@@ -100,6 +89,8 @@ export default function BodyCamera({ theme, isDark }: { theme: any; isDark: bool
   const [role,         setRole]         = useState<Role>('officer');
   const [callsign,     setCallsign]     = useState('');
   const [connected,    setConnected]    = useState(false);
+  const [connecting,   setConnecting]   = useState(true);
+  const [latency,      setLatency]      = useState(0);
 
   // ── Officer state ───────────────────────────────────────────────────────────
   const [streaming,    setStreaming]    = useState(false);   // is stream live?
@@ -126,50 +117,88 @@ export default function BodyCamera({ theme, isDark }: { theme: any; isDark: bool
 
   // ── Connect socket on role change ──────────────────────────────────────────
   useEffect(() => {
+    let isMounted = true;
+    let latTimer: any = null;
+    setConnecting(true);
 
-    const socket = io(getSocketUrl(), {
-      transports: ['websocket'],
-      forceNew: true,
-      reconnectionAttempts: 5,
-    });
-    socketRef.current = socket;
+    const connectSocket = async () => {
+      const serverUrl = await getSocketUrl();
+      if (!isMounted) return;
 
-    socket.on('connect', () => {
-      setConnected(true);
-      const cs = `CAM-${(socket.id || '').substring(0, 4).toUpperCase()}`;
-      setCallsign(cs);
-
-      if (role === 'officer') {
-        addLog('Socket linked. Ready to stream.');
-        // Don't auto-register — officer must explicitly START STREAM
-      } else {
-        // Admin: just request current feeds
-        socket.emit('camera_get_feeds');
-        addLog('Admin monitor connected.');
-      }
-    });
-
-    socket.on('camera_feeds', (feeds: LiveFeed[]) => {
-      // Filter out self (own socket id won't be in feeds if admin, but guard anyway)
-      const others = feeds.filter(f => f.id !== socket.id);
-      setLiveFeeds(others);
-      setFeaturedId(prev => {
-        if (prev && others.find(f => f.id === prev)) return prev;
-        return others[0]?.id ?? null;
+      const socket = io(serverUrl, {
+        transports: ['websocket'],
+        forceNew: true,
+        reconnectionAttempts: 5,
       });
-    });
+      socketRef.current = socket;
 
-    socket.on('camera_frame', (data: { id: string; frame: string }) => {
-      setFrames(prev => ({ ...prev, [data.id]: data.frame }));
-    });
+      socket.on('connect', () => {
+        if (!isMounted) return;
+        setConnected(true);
+        setConnecting(false);
+        const cs = `CAM-${(socket.id || '').substring(0, 4).toUpperCase()}`;
+        setCallsign(cs);
 
-    socket.on('disconnect', () => setConnected(false));
-    socket.on('connect_error', () => setConnected(false));
+        // Measure initial latency
+        const start = Date.now();
+        socket.emit('ping');
+        socket.once('pong', () => setLatency(Date.now() - start));
+
+        // Periodic latency ping every 10 s
+        latTimer = setInterval(() => {
+          if (socket.connected) {
+            const t = Date.now();
+            socket.emit('ping');
+            socket.once('pong', () => setLatency(Date.now() - t));
+          }
+        }, 10000);
+
+        if (role === 'officer') {
+          addLog('Socket linked. Ready to stream.');
+          // Don't auto-register — officer must explicitly START STREAM
+        } else {
+          // Admin: just request current feeds
+          socket.emit('camera_get_feeds');
+          addLog('Admin monitor connected.');
+        }
+      });
+
+      socket.on('camera_feeds', (feeds: LiveFeed[]) => {
+        if (!isMounted) return;
+        // Filter out self (own socket id won't be in feeds if admin, but guard anyway)
+        const others = feeds.filter(f => f.id !== socket.id);
+        setLiveFeeds(others);
+        setFeaturedId(prev => {
+          if (prev && others.find(f => f.id === prev)) return prev;
+          return others[0]?.id ?? null;
+        });
+      });
+
+      socket.on('camera_frame', (data: { id: string; frame: string }) => {
+        if (!isMounted) return;
+        setFrames(prev => ({ ...prev, [data.id]: data.frame }));
+      });
+
+      socket.on('disconnect', () => {
+        if (!isMounted) return;
+        setConnected(false);
+        setConnecting(false);
+      });
+      socket.on('connect_error', () => {
+        if (!isMounted) return;
+        setConnected(false);
+        setConnecting(false);
+      });
+    };
+
+    void connectSocket();
 
     return () => {
+      isMounted = false;
+      if (latTimer) clearInterval(latTimer);
       // Stop media stream on unmount
       stopMediaStream();
-      socket.disconnect();
+      socketRef.current?.disconnect();
     };
   }, [role]);
 
@@ -435,15 +464,22 @@ export default function BodyCamera({ theme, isDark }: { theme: any; isDark: bool
                 <Text style={[styles.badgeText, { color: C.red400 }]}>LIVE</Text>
               </View>
             )}
-            <View style={[styles.badge, {
-              backgroundColor: connected ? 'rgba(34,197,94,0.07)' : 'rgba(100,116,139,0.07)',
-              borderColor: connected ? 'rgba(34,197,94,0.3)' : 'rgba(100,116,139,0.3)',
-            }]}>
-              <View style={[styles.badgeDot, { backgroundColor: connected ? C.green500 : C.slate500 }]} />
-              <Text style={[styles.badgeText, { color: connected ? C.green500 : C.slate500 }]}>
-                {connected ? 'LINKED' : 'OFFLINE'}
-              </Text>
-            </View>
+            {connecting ? (
+              <View style={[styles.badge, { backgroundColor: 'rgba(100,116,139,0.07)', borderColor: 'rgba(100,116,139,0.3)' }]}>
+                <View style={[styles.badgeDot, { backgroundColor: C.amber500 }]} />
+                <Text style={[styles.badgeText, { color: C.amber500 }]}>CONNECTING</Text>
+              </View>
+            ) : (
+              <View style={[styles.badge, {
+                backgroundColor: connected ? 'rgba(34,197,94,0.07)' : 'rgba(100,116,139,0.07)',
+                borderColor: connected ? 'rgba(34,197,94,0.3)' : 'rgba(100,116,139,0.3)',
+              }]}>
+                <View style={[styles.badgeDot, { backgroundColor: connected ? C.green500 : C.slate500 }]} />
+                <Text style={[styles.badgeText, { color: connected ? C.green500 : C.slate500 }]}>
+                  {connected ? `LINKED · ${latency}ms` : 'OFFLINE'}
+                </Text>
+              </View>
+            )}
             <Pressable
               style={styles.roleSwitchBtn}
               onPress={() => setRole('admin')}
