@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { usePathname, useRouter } from 'expo-router';
 import { DrawerContentComponentProps, DrawerContentScrollView } from 'expo-router/drawer';
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, TextInput, View, useColorScheme } from 'react-native';
 import { clearStoredSocketUrl, getStoredSocketUrl, setStoredSocketUrl } from './lib/network';
 import { MODULE_CATEGORIES, ModuleItem } from '../constants/modules';
 import { Colors, Fonts, Spacing } from '../constants/theme';
@@ -10,6 +10,10 @@ import { Colors, Fonts, Spacing } from '../constants/theme';
 export default function CustomDrawer(props: DrawerContentComponentProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const scheme = useColorScheme();
+  const isDark = scheme === 'dark';
+  const theme = isDark ? Colors.dark : Colors.light;
+
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
     'police-ops': true, // Keep first one open by default
@@ -105,19 +109,19 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background, borderRightColor: theme.border }]}>
       {/* Officer Header Card */}
-      <View style={styles.header}>
+      <View style={[styles.header, { backgroundColor: theme.backgroundElement, borderBottomColor: theme.border }]}>
         <View style={styles.avatarContainer}>
           <View style={styles.avatarGlow} />
-          <View style={styles.avatar}>
-            <Feather name="shield" size={24} color={Colors.dark.primary} />
+          <View style={[styles.avatar, { borderColor: theme.primary, backgroundColor: theme.backgroundSelected }]}>
+            <Feather name="shield" size={24} color={theme.primary} />
           </View>
-          <View style={styles.statusDot} />
+          <View style={[styles.statusDot, { borderColor: theme.backgroundElement }]} />
         </View>
         <View style={styles.officerInfo}>
-          <Text style={styles.officerName}>OFFICER M. ROSS</Text>
-          <Text style={styles.officerBadge}>TAC-DIV • BADGE #7419</Text>
+          <Text style={[styles.officerName, { color: theme.text }]}>POLICECOMS</Text>
+          <Text style={[styles.officerBadge, { color: theme.textSecondary }]}>KNOX SECURED • TAC-DIV #7419</Text>
           <View style={styles.dutyIndicator}>
             <Text style={styles.dutyText}>ACTIVE DUTY</Text>
           </View>
@@ -125,12 +129,12 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
       </View>
 
       {/* Module Search */}
-      <View style={styles.searchContainer}>
-        <Feather name="search" size={16} color={Colors.dark.textSecondary} style={styles.searchIcon} />
+      <View style={[styles.searchContainer, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
+        <Feather name="search" size={16} color={theme.textSecondary} style={styles.searchIcon} />
         <TextInput
           placeholder="Search tactical modules..."
-          placeholderTextColor={Colors.dark.textSecondary}
-          style={styles.searchInput}
+          placeholderTextColor={theme.textSecondary}
+          style={[styles.searchInput, { color: theme.text }]}
           value={searchQuery}
           onChangeText={setSearchQuery}
           autoCapitalize="none"
@@ -138,12 +142,10 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
         />
         {searchQuery ? (
           <Pressable onPress={() => setSearchQuery('')}>
-            <Feather name="x" size={16} color={Colors.dark.textSecondary} />
+            <Feather name="x" size={16} color={theme.textSecondary} />
           </Pressable>
         ) : null}
       </View>
-
-
 
       {/* Main Drawer Navigation Items */}
       <DrawerContentScrollView
@@ -151,46 +153,102 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* HQ Dashboard Shortcut */}
+        {/* HQ Command Center Shortcut */}
         <Pressable
-          style={[styles.homeButton, pathname === '/' && styles.activeItem]}
+          style={[
+            styles.homeButton,
+            pathname === '/' && {
+              backgroundColor: isDark ? 'rgba(6, 182, 212, 0.12)' : 'rgba(29, 78, 216, 0.1)',
+              borderColor: isDark ? 'rgba(6, 182, 212, 0.3)' : 'rgba(29, 78, 216, 0.2)',
+              borderWidth: 1,
+            },
+          ]}
           onPress={handleHomePress}
         >
           <Feather
             name="grid"
-            size={18}
-            color={pathname === '/' ? Colors.dark.primary : Colors.dark.textSecondary}
+            size={16}
+            color={pathname === '/' ? (isDark ? '#22d3ee' : '#1d4ed8') : theme.textSecondary}
           />
-          <Text style={[styles.homeButtonText, pathname === '/' && styles.activeItemText]}>
-            HQ COMMAND CENTER
+          <Text
+            style={[
+              styles.homeButtonText,
+              { color: pathname === '/' ? (isDark ? '#22d3ee' : '#1d4ed8') : theme.textSecondary },
+            ]}
+          >
+            OPERATION CONSOLE
           </Text>
-          {pathname === '/' && <View style={styles.activeIndicator} />}
+          {pathname === '/' && (
+            <View style={[styles.activeIndicator, { backgroundColor: isDark ? '#22d3ee' : '#1d4ed8' }]} />
+          )}
         </Pressable>
 
         {/* Divider */}
-        <View style={styles.divider} />
+        <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
         {/* Categories & Submodules */}
         {filteredCategories.map((category) => {
           const isExpanded = activeExpandedCategories[category.id];
+
+          const categoryTextColor = isExpanded
+            ? isDark
+              ? '#fde047' // yellow-300
+              : '#1e3a8a' // blue-900
+            : isDark
+            ? '#eab308' // yellow-500
+            : '#1d4ed8'; // blue-700
+
+          const headerBgColor = isExpanded
+            ? isDark
+              ? 'rgba(234, 179, 8, 0.10)' // yellow-500/10 glow
+              : '#eff6ff' // blue-50
+            : 'transparent';
+
+          const headerBorderColor = isExpanded
+            ? isDark
+              ? 'rgba(234, 179, 8, 0.25)' // yellow-500/25 border
+              : 'rgba(191, 219, 254, 0.6)' // blue-200 border
+            : 'transparent';
+
           return (
             <View key={category.id} style={styles.categoryContainer}>
-              {/* Category Header */}
+              {/* Category Header with Yellow/Orange design */}
               <Pressable
-                style={styles.categoryHeader}
+                style={[
+                  styles.categoryHeader,
+                  {
+                    backgroundColor: headerBgColor,
+                    borderColor: headerBorderColor,
+                    borderWidth: 1,
+                  },
+                ]}
                 onPress={() => !searchQuery && toggleCategory(category.id)}
               >
                 <View style={styles.categoryTitleGroup}>
-                  <Feather name={category.icon as any} size={18} color={Colors.dark.primary} />
-                  <Text style={styles.categoryName}>{category.name}</Text>
+                  <Feather name={category.icon as any} size={15} color={categoryTextColor} />
+                  <Text style={[styles.categoryName, { color: categoryTextColor }]}>{category.name}</Text>
+                  {!isExpanded && !searchQuery && (
+                    <View
+                      style={[
+                        styles.tapBadge,
+                        {
+                          borderColor: isDark ? 'rgba(234, 179, 8, 0.2)' : '#bfdbfe',
+                          backgroundColor: isDark ? 'rgba(234, 179, 8, 0.05)' : '#eff6ff',
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.tapBadgeText, { color: isDark ? 'rgba(250, 204, 21, 0.7)' : '#3b82f6' }]}>
+                        TAP
+                      </Text>
+                    </View>
+                  )}
                 </View>
                 {!searchQuery && (
                   <View style={styles.categoryBadgeGroup}>
-                    <Text style={styles.moduleCount}>{category.modules.length}</Text>
                     <Feather
                       name={isExpanded ? 'chevron-down' : 'chevron-right'}
                       size={14}
-                      color={Colors.dark.textSecondary}
+                      color={categoryTextColor}
                     />
                   </View>
                 )}
@@ -203,21 +261,42 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
                     const modulePath = `/module/${module.id}`;
                     const isActive = pathname === modulePath;
 
+                    const itemBgColor = isActive
+                      ? isDark
+                        ? 'rgba(6, 182, 212, 0.1)'
+                        : 'rgba(29, 78, 216, 0.1)'
+                      : 'transparent';
+
+                    const itemBorderColor = isActive
+                      ? isDark
+                        ? 'rgba(6, 182, 212, 0.3)'
+                        : 'rgba(29, 78, 216, 0.2)'
+                      : 'transparent';
+
+                    const itemTextColor = isActive
+                      ? isDark
+                        ? '#22d3ee'
+                        : '#1d4ed8'
+                      : theme.textSecondary;
+
                     return (
                       <Pressable
                         key={module.id}
-                        style={[styles.moduleItem, isActive && styles.activeItem]}
+                        style={[
+                          styles.moduleItem,
+                          {
+                            backgroundColor: itemBgColor,
+                            borderColor: itemBorderColor,
+                            borderWidth: 1,
+                          },
+                        ]}
                         onPress={() => handleModulePress(module)}
                       >
-                        <Feather
-                          name={module.icon as any}
-                          size={16}
-                          color={isActive ? Colors.dark.primary : Colors.dark.textSecondary}
-                        />
-                        <Text style={[styles.moduleNameText, isActive && styles.activeItemText]}>
-                          {module.name}
-                        </Text>
-                        {isActive && <View style={styles.activeIndicator} />}
+                        <Feather name={module.icon as any} size={15} color={itemTextColor} />
+                        <Text style={[styles.moduleNameText, { color: itemTextColor }]}>{module.name}</Text>
+                        {isActive && (
+                          <View style={[styles.activeIndicator, { backgroundColor: isDark ? '#22d3ee' : '#1d4ed8' }]} />
+                        )}
                       </Pressable>
                     );
                   })}
@@ -445,20 +524,38 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 10,
     paddingHorizontal: Spacing.three,
+    marginHorizontal: Spacing.one,
+    borderRadius: 8,
   },
   categoryTitleGroup: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
   },
   categoryName: {
-    color: Colors.dark.text,
-    fontSize: 12,
-    fontWeight: 'bold',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
     marginLeft: Spacing.two,
+    textTransform: 'uppercase',
+  },
+  tapBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    marginLeft: Spacing.two,
+  },
+  tapBadgeText: {
+    fontSize: 8,
+    fontFamily: Fonts?.mono,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
   },
   categoryBadgeGroup: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginLeft: 4,
   },
   moduleCount: {
     fontSize: 10,
@@ -470,22 +567,23 @@ const styles = StyleSheet.create({
     marginRight: Spacing.one,
   },
   modulesList: {
-    paddingLeft: Spacing.three,
-    marginTop: 2,
+    paddingLeft: Spacing.three + Spacing.one,
+    marginTop: 3,
     marginBottom: 6,
   },
   moduleItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 9,
     paddingHorizontal: Spacing.three,
     marginVertical: 1,
     borderRadius: 6,
     marginRight: Spacing.two,
   },
   moduleNameText: {
-    color: Colors.dark.textSecondary,
-    fontSize: 12,
+    fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
     marginLeft: Spacing.two,
   },
   footer: {
