@@ -1,3 +1,12 @@
+// Polyfill setImmediate for Web browsers
+if (typeof globalThis.setImmediate === 'undefined') {
+  (globalThis as any).setImmediate = (fn: (...args: any[]) => void, ...args: any[]) =>
+    setTimeout(fn, 0, ...args);
+}
+if (typeof globalThis.clearImmediate === 'undefined') {
+  (globalThis as any).clearImmediate = (id: any) => clearTimeout(id);
+}
+
 import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
 import { Drawer } from 'expo-router/drawer';
 import { useColorScheme } from 'react-native';

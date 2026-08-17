@@ -131,32 +131,27 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
     if (isLargeScreen) setMobileView('chat');
   }, [isLargeScreen]);
 
-  // Request microphone permission early on mount (all platforms)
+  // Check microphone permission status on mount (without blocking drawer navigation)
   useEffect(() => {
-    const requestInitialPermission = async () => {
-      if (Platform.OS === 'web' && navigator.mediaDevices?.getUserMedia) {
-        // Web: trigger browser prompt early so PTT works instantly
-        navigator.mediaDevices.getUserMedia({ audio: true })
-          .then(stream => { stream.getTracks().forEach(t => t.stop()); })
-          .catch(err => {
-            console.warn('[PTT] Early web mic prompt declined:', err);
-            if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-              console.warn('[PTT] Tip: Use HTTPS or localhost to enable mic access on remote devices.');
-            }
-          });
-      } else if (Platform.OS !== 'web') {
-        // Native Android/iOS: use modern expo-audio
+    const checkInitialPermission = async () => {
+      if (Platform.OS === 'web' && navigator.permissions && (navigator.permissions as any).query) {
         try {
-          const { status } = await requestRecordingPermissionsAsync();
+          await (navigator.permissions as any).query({ name: 'microphone' });
+        } catch {
+          /* noop */
+        }
+      } else if (Platform.OS !== 'web') {
+        try {
+          const { status } = await getRecordingPermissionsAsync();
           if (status !== 'granted') {
-            console.warn('[PTT] Microphone permission not granted:', status);
+            console.warn('[PTT] Microphone permission not yet granted:', status);
           }
         } catch (err) {
-          console.warn('[PTT] expo-audio early permission request error:', err);
+          console.warn('[PTT] expo-audio permission check error:', err);
         }
       }
     };
-    void requestInitialPermission();
+    void checkInitialPermission();
   }, []);
 
   // ── Socket ────────────────────────────────────────────────────────────────
@@ -247,7 +242,7 @@ export default function ERadio({ theme, isDark }: { theme: any; isDark: boolean 
 
   // Load Firestore history
   useEffect(() => {
-    if (!connected) return;
+    if (!connected || !db) return;
     const loadHistory = async () => {
       try {
         const q = query(collection(db, 'messages'), orderBy('createdAt', 'asc'), limit(100));

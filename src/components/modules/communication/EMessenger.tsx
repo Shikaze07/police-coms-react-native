@@ -189,7 +189,7 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
 
   // Load Firestore history
   useEffect(() => {
-    if (!connected) return;
+    if (!connected || !db) return;
     const loadHistory = async () => {
       try {
         const q = query(collection(db, 'messages'), orderBy('createdAt', 'asc'), limit(100));
@@ -252,8 +252,12 @@ export default function EMessenger({ theme, isDark }: { theme: any; isDark: bool
     };
 
     try {
-      const docRef = await addDoc(collection(db, 'messages'), msgData);
-      socketRef.current?.emit('send_message', { id: docRef.id, ...msgData });
+      if (db) {
+        const docRef = await addDoc(collection(db, 'messages'), msgData);
+        socketRef.current?.emit('send_message', { id: docRef.id, ...msgData });
+      } else {
+        socketRef.current?.emit('send_message', { text: finalTxt.trim() });
+      }
     } catch {
       socketRef.current?.emit('send_message', { text: finalTxt.trim() });
     } finally {

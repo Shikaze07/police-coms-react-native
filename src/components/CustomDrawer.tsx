@@ -60,14 +60,19 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
   }, [searchQuery, filteredCategories, expandedCategories]);
 
   const handleModulePress = (module: ModuleItem) => {
-    router.push(`/module/${module.id}` as any);
     props.navigation.closeDrawer();
+    router.push(`/module/${module.id}` as any);
   };
 
   const handleHomePress = () => {
-    router.push('/');
     props.navigation.closeDrawer();
+    router.push('/');
   };
+
+  // Automatically close drawer on pathname changes to prevent navigation freeze
+  useEffect(() => {
+    props.navigation.closeDrawer();
+  }, [pathname]);
 
   useEffect(() => {
     void (async () => {
@@ -106,6 +111,24 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
     setSocketUrlInput('');
     setSocketUrlStatus('Auto-detecting computer IP');
     Alert.alert('Cleared', 'Saved socket URL removed.');
+  };
+
+  const handleLogout = () => {
+    Alert.alert(
+      'LOGOUT CONFIRMATION',
+      'Are you sure you want to terminate your secure session and exit Knox Command Center?',
+      [
+        { text: 'CANCEL', style: 'cancel' },
+        {
+          text: 'LOGOUT',
+          style: 'destructive',
+          onPress: () => {
+            props.navigation.closeDrawer();
+            router.replace('/?logout=true' as any);
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -347,7 +370,7 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
           <Text style={styles.emergencyButtonText}>EMERGENCY BROADCAST</Text>
         </Pressable>
 
-        {/* Settings button — very bottom */}
+        {/* Settings button */}
         <Pressable
           style={styles.settingsButton}
           onPress={() => setShowSettings((v) => !v)}
@@ -365,6 +388,12 @@ export default function CustomDrawer(props: DrawerContentComponentProps) {
             size={12}
             color={showSettings ? Colors.dark.primary : Colors.dark.textSecondary}
           />
+        </Pressable>
+
+        {/* Logout button — below Settings */}
+        <Pressable style={styles.logoutButton} onPress={handleLogout}>
+          <Feather name="log-out" size={14} color={Colors.dark.danger} />
+          <Text style={styles.logoutButtonText}>LOGOUT SESSION</Text>
         </Pressable>
       </View>
     </View>
@@ -723,4 +752,24 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     letterSpacing: 0.5,
   },
+  logoutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: Spacing.two,
+    paddingVertical: 10,
+    paddingHorizontal: Spacing.two,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.35)',
+    backgroundColor: 'rgba(127, 29, 29, 0.2)',
+    gap: 6,
+  },
+  logoutButtonText: {
+    color: Colors.dark.danger,
+    fontSize: 10,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
 });
+
